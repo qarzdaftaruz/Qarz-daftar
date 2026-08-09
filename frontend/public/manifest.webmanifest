@@ -1,0 +1,28 @@
+{
+  "name": "Qarz Daftar — elektron qarz daftari",
+  "short_name": "Qarz Daftar",
+  "description": "Do'kon uchun elektron qarz daftari: mijozlar qarzi, to'lovlar va avtomatik eslatmalar.",
+  "lang": "uz",
+  "dir": "ltr",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#ffffff",
+  "theme_color": "#2563eb",
+  "categories": ["business", "finance", "productivity"],
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

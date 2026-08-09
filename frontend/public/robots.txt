@@ -1,0 +1,32 @@
+# Qarz Daftar — robots.txt
+
+User-agent: *
+Allow: /$
+Allow: /favicon.svg
+Allow: /manifest.webmanifest
+
+# Shaxsiy va boshqaruv sahifalari indekslanmasin
+Disallow: /admin
+Disallow: /admin/
+Disallow: /superadmin
+Disallow: /superadmin/
+Disallow: /debtor
+Disallow: /debtor/
+Disallow: /clients
+Disallow: /clients/
+Disallow: /stats
+Disallow: /profile
+Disallow: /new-shop
+
+# Keraksiz parametrli nusxalar
+Disallow: /*?shop_id=
+Disallow: /*?tgWebApp
+
+# Kontent o'g'irlaydigan AI skraperlar
+User-agent: GPTBot
+Disallow: /
+
+User-agent: CCBot
+Disallow: /
+
+Sitemap: https://qarzdaftar.vercel.app/sitemap.xml

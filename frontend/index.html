@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="uz">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+
+    <!-- ═══ Asosiy SEO ═══ -->
+    <title>Qarz Daftar — do'kon uchun elektron qarz daftari | Telegram ilova</title>
+    <meta name="description" content="Qarz Daftar — do'kon va savdo nuqtalari uchun elektron qarz daftari. Mijozlar qarzini yuriting, to'lovlarni qayd eting, muddat kelganda avtomatik eslatma oling. Telegram orqali, daftarsiz va bepul sinov bilan." />
+    <meta name="keywords" content="qarz daftar, elektron qarz daftari, do'kon qarz dasturi, nasiya daftari, qarz hisobi, telegram mini app, mijoz qarzi, savdo dasturi, qarzdorlar ro'yxati" />
+    <meta name="author" content="Qarz Daftar" />
+    <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1" />
+    <link rel="canonical" href="https://qarzdaftar.vercel.app/" />
+
+    <!-- Til va mintaqa -->
+    <meta name="language" content="Uzbek" />
+    <meta name="geo.region" content="UZ" />
+    <meta name="geo.placename" content="Uzbekistan" />
+    <link rel="alternate" hreflang="uz" href="https://qarzdaftar.vercel.app/" />
+    <link rel="alternate" hreflang="x-default" href="https://qarzdaftar.vercel.app/" />
+
+    <!-- ═══ Open Graph (Telegram, Facebook) ═══ -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Qarz Daftar" />
+    <meta property="og:locale" content="uz_UZ" />
+    <meta property="og:title" content="Qarz Daftar — do'kon uchun elektron qarz daftari" />
+    <meta property="og:description" content="Mijozlar qarzini telefoningizda yuriting. Avtomatik eslatmalar, to'lov tarixi, statistika. Telegram ilovasi orqali." />
+    <meta property="og:url" content="https://qarzdaftar.vercel.app/" />
+    <meta property="og:image" content="https://qarzdaftar.vercel.app/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Qarz Daftar — elektron qarz daftari" />
+
+    <!-- ═══ Twitter ═══ -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Qarz Daftar — do'kon uchun elektron qarz daftari" />
+    <meta name="twitter:description" content="Mijozlar qarzini telefoningizda yuriting. Avtomatik eslatmalar, to'lov tarixi, statistika." />
+    <meta name="twitter:image" content="https://qarzdaftar.vercel.app/og-image.png" />
+
+    <!-- ═══ PWA / ikonkalar ═══ -->
+    <meta name="theme-color" content="#2563eb" />
+    <meta name="color-scheme" content="light" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Qarz Daftar" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+
+    <!-- ═══ Tezlik: shriftlar bloklamasdan yuklanadi ═══ -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- Manrope faqat sarlavhalar uchun — 500 vazni ishlatilmaydi, olib tashlandi -->
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap"
+    />
+
+    <!--
+      Telegram Mini App SDK.
+      `defer` — sahifa tahlilini bloklamaydi, lekin modul skriptdan OLDIN
+      bajariladi (ikkalasi ham hujjat tartibida ishga tushadi), shuning uchun
+      main.jsx ichida window.Telegram allaqachon mavjud bo'ladi.
+    -->
+    <script defer src="https://telegram.org/js/telegram-web-app.js"></script>
+
+    <!-- ═══ Strukturaviy ma'lumot (Google rich results) ═══ -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@graph": [
+        {
+          "@type": "SoftwareApplication",
+          "name": "Qarz Daftar",
+          "applicationCategory": "BusinessApplication",
+          "operatingSystem": "Telegram, Android, iOS, Web",
+          "description": "Do'kon va savdo nuqtalari uchun elektron qarz daftari. Mijozlar qarzini yuritish, to'lovlarni qayd etish va avtomatik eslatmalar.",
+          "url": "https://qarzdaftar.vercel.app/",
+          "inLanguage": "uz",
+          "offers": {
+            "@type": "Offer",
+            "price": "0",
+            "priceCurrency": "UZS",
+            "description": "7 kunlik bepul sinov muddati"
+          },
+          "featureList": [
+            "Mijozlar va qarzlar hisobi",
+            "To'lovlar tarixi va qoldiq nazorati",
+            "Muddat kelganda avtomatik Telegram eslatmasi",
+            "Qarzdor uchun shaxsiy kabinet",
+            "Do'kon statistikasi va oylik tahlil"
+          ]
+        },
+        {
+          "@type": "Organization",
+          "name": "Qarz Daftar",
+          "url": "https://qarzdaftar.vercel.app/",
+          "logo": "https://qarzdaftar.vercel.app/apple-touch-icon.png",
+          "areaServed": "UZ",
+          "sameAs": ["https://t.me/Qarzdaftaruzbotbot"]
+        },
+        {
+          "@type": "FAQPage",
+          "mainEntity": [
+            {
+              "@type": "Question",
+              "name": "Qarz Daftar nima?",
+              "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "Qarz Daftar — do'konlar uchun elektron qarz daftari. Qog'oz daftar o'rniga mijozlar qarzini telefonda yuritasiz, to'lovlarni qayd etasiz va muddat kelganda avtomatik eslatma olasiz."
+              }
+            },
+            {
+              "@type": "Question",
+              "name": "Qanday boshlash mumkin?",
+              "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "Telegram'da botni oching, /start bosing va telefon raqamingizni ulashing. So'ng do'kon nomini kiriting — admin tasdiqlagach ishlashni boshlaysiz. Dastlabki 7 kun bepul."
+              }
+            },
+            {
+              "@type": "Question",
+              "name": "Qarzdor o'z qarzini ko'ra oladimi?",
+              "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "Ha. Do'kondor qarz qo'shganda qarzdorga Telegram orqali xabar boradi. Qarzdor ilovadan barcha do'konlardagi qarzlari, to'lov tarixi va qoldig'ini ko'radi."
+              }
+            }
+          ]
+        }
+      ]
+    }
+    </script>
+  </head>
+  <body>
+    <!--
+      Ilova yuklanguncha ko'rinadigan statik matn.
+      React ishga tushgach almashtiriladi, lekin qidiruv robotlari va
+      JavaScript o'chirilgan brauzerlar shu mazmunni ko'radi.
+    -->
+    <div id="root">
+      <div style="max-width:640px;margin:0 auto;padding:56px 24px;font-family:system-ui,-apple-system,'Segoe UI',sans-serif;color:#111827;text-align:center">
+        <h1 style="font-size:26px;font-weight:800;margin:0 0 12px">Qarz Daftar — elektron qarz daftari</h1>
+        <p style="font-size:15px;line-height:1.65;color:#4b5563;margin:0 0 20px">
+          Do'kon va savdo nuqtalari uchun qarz hisobi dasturi. Mijozlar qarzini yuriting,
+          to'lovlarni qayd eting, muddat kelganda avtomatik eslatma oling.
+          Qog'oz daftar ham, kompyuter ham kerak emas — hammasi Telegram'da.
+        </p>
+        <p style="font-size:15px;line-height:1.65;color:#4b5563;margin:0 0 24px">
+          Dastlabki 7 kun bepul. Qarzdor ham o'z qarzini va to'lov tarixini ko'ra oladi.
+        </p>
+        <a href="https://t.me/Qarzdaftaruzbotbot"
+           style="display:inline-block;padding:12px 24px;border-radius:12px;background:#2563eb;color:#fff;text-decoration:none;font-weight:600;font-size:15px">
+          Telegram'da ochish
+        </a>
+      </div>
+    </div>
+    <noscript>
+      <p style="text-align:center;font-family:system-ui,sans-serif;color:#b91c1c;padding:0 24px">
+        Ilova ishlashi uchun brauzerda JavaScript yoqilgan bo'lishi kerak.
+      </p>
+    </noscript>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

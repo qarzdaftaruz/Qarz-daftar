@@ -1,0 +1,272 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  *, *::before, *::after { box-sizing: border-box; }
+
+  body {
+    font-family: 'Inter', system-ui, sans-serif;
+    background-color: var(--tg-theme-secondary-bg-color, #f3f4f6);
+    color: var(--tg-theme-text-color, #111827);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    -webkit-tap-highlight-color: transparent;
+    overflow-x: hidden;
+    overscroll-behavior-y: none;
+  }
+
+  #root {
+    min-height: 100svh;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .font-display { font-family: 'Manrope', 'Inter', system-ui, sans-serif; }
+
+  /* Pul / moliyaviy raqamlar — bir xil kenglikdagi figuralar */
+  .money {
+    font-family: 'Manrope', 'Inter', sans-serif;
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum';
+    letter-spacing: -0.01em;
+  }
+}
+
+@layer components {
+  /* ── Cards ──────────────────────────────────────────────────────── */
+  .card {
+    @apply rounded-3xl p-4;
+    background: var(--tg-theme-bg-color, #fff);
+    box-shadow: 0 1px 2px rgba(17,24,39,0.04), 0 6px 20px rgba(17,24,39,0.06);
+    transition: transform 0.2s cubic-bezier(0.22,1,0.36,1), box-shadow 0.2s ease;
+  }
+  .card-sec {
+    @apply rounded-3xl p-4;
+    background: var(--tg-theme-secondary-bg-color, #f3f4f6);
+  }
+
+  /* Hero — owner (ko'k → binafsha) */
+  .card-hero {
+    @apply rounded-[28px] p-5 text-white overflow-hidden relative;
+    background: linear-gradient(135deg, #1d4ed8 0%, #2563EB 42%, #7c3aed 100%);
+    box-shadow: 0 14px 40px rgba(37,99,235,0.42), 0 2px 8px rgba(124,58,237,0.24);
+    transition: transform 0.2s cubic-bezier(0.22,1,0.36,1), box-shadow 0.2s ease;
+  }
+  /* Hero — debtor / trust (yashil) */
+  .card-hero-trust {
+    @apply rounded-[28px] p-5 text-white overflow-hidden relative;
+    background: linear-gradient(135deg, #15803d 0%, #16A34A 48%, #10b981 100%);
+    box-shadow: 0 14px 40px rgba(22,163,74,0.40), 0 2px 8px rgba(16,185,129,0.22);
+    transition: transform 0.2s cubic-bezier(0.22,1,0.36,1), box-shadow 0.2s ease;
+  }
+  /* Yorug' o'tuvchi nur (sheen) — kirishda BIR marta (batareya tejaladi) */
+  .card-hero::before, .card-hero-trust::before {
+    content: '';
+    position: absolute;
+    top: -60%;
+    left: 0;
+    width: 45%;
+    height: 220%;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.18), transparent);
+    transform: translateX(-120%) skewX(-18deg);
+    animation: sheen 1.6s ease-in-out 0.55s 1 forwards;
+    pointer-events: none;
+  }
+  /* Yumshoq doira */
+  .card-hero::after, .card-hero-trust::after {
+    content: '';
+    position: absolute;
+    top: -45%;
+    right: -12%;
+    width: 230px;
+    height: 230px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.10);
+    pointer-events: none;
+  }
+
+  /* ── Typography ──────────────────────────────────────────────────── */
+  .section-title {
+    @apply text-[11px] font-bold uppercase;
+    color: var(--tg-theme-hint-color, #6b7280);
+    letter-spacing: 0.09em;
+  }
+  .page-title {
+    @apply text-[22px] font-extrabold;
+    font-family: 'Manrope', 'Inter', sans-serif;
+    color: var(--tg-theme-text-color, #111827);
+    letter-spacing: -0.02em;
+  }
+
+  /* ── Buttons ─────────────────────────────────────────────────────── */
+  .btn-primary {
+    @apply w-full py-3.5 rounded-2xl font-bold text-sm
+           flex items-center justify-center gap-2
+           active:scale-[0.96] transition-transform duration-150;
+    background: linear-gradient(135deg, #2563EB 0%, #1d4ed8 100%);
+    color: #fff;
+    box-shadow: 0 8px 22px rgba(37,99,235,0.42), 0 1px 0 rgba(255,255,255,0.16) inset;
+  }
+  .btn-ghost {
+    @apply w-full py-3 rounded-2xl font-semibold text-sm
+           flex items-center justify-center gap-2
+           active:scale-[0.96] transition-transform duration-150;
+    background: var(--tg-theme-secondary-bg-color, #f3f4f6);
+    color: var(--tg-theme-text-color, #111827);
+  }
+  .btn-danger {
+    @apply w-full py-3 rounded-2xl font-bold text-sm
+           flex items-center justify-center gap-2
+           active:scale-[0.96] transition-transform duration-150 text-white;
+    background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+    box-shadow: 0 8px 20px rgba(239,68,68,0.38);
+  }
+  .btn-success {
+    @apply w-full py-3 rounded-2xl font-bold text-sm
+           flex items-center justify-center gap-2
+           active:scale-[0.96] transition-transform duration-150 text-white;
+    background: linear-gradient(135deg, #16A34A 0%, #15803d 100%);
+    box-shadow: 0 8px 20px rgba(22,163,74,0.36);
+  }
+
+  /* ── Input ─────────────────────────────────────────────────────────── */
+  .input {
+    @apply w-full px-4 py-3 rounded-2xl text-sm outline-none border-2 transition-all duration-200;
+    background: var(--tg-theme-secondary-bg-color, #f3f4f6);
+    color: var(--tg-theme-text-color, #111827);
+    border-color: transparent;
+  }
+  .input:focus {
+    border-color: #2563EB;
+    background: var(--tg-theme-bg-color, #fff);
+    box-shadow: 0 0 0 4px rgba(37,99,235,0.13);
+  }
+  .input::placeholder { color: var(--tg-theme-hint-color, #9ca3af); opacity: 0.75; }
+
+  /* ── Badges ──────────────────────────────────────────────────────── */
+  .badge-open    { @apply inline-flex items-center gap-1 bg-blue-50  text-blue-600  text-[10px] font-bold px-2.5 py-0.5 rounded-full ring-1 ring-inset ring-blue-100  transition-colors duration-300; }
+  .badge-partial { @apply inline-flex items-center gap-1 bg-amber-50 text-amber-600 text-[10px] font-bold px-2.5 py-0.5 rounded-full ring-1 ring-inset ring-amber-100 transition-colors duration-300; }
+  .badge-closed  { @apply inline-flex items-center gap-1 bg-green-50 text-green-600 text-[10px] font-bold px-2.5 py-0.5 rounded-full ring-1 ring-inset ring-green-100 transition-colors duration-300; }
+  .badge-overdue { @apply inline-flex items-center gap-1 bg-red-50   text-red-600   text-[10px] font-bold px-2.5 py-0.5 rounded-full ring-1 ring-inset ring-red-100   transition-colors duration-300; }
+
+  /* ── List item ─────────────────────────────────────────────────────── */
+  .list-item {
+    @apply flex items-center gap-3 px-4 py-3.5 transition-all duration-150 cursor-pointer;
+    border-bottom: 0.5px solid var(--tg-theme-secondary-bg-color, #eef0f3);
+  }
+  .list-item:last-child { border-bottom: none; }
+  .list-item:active { background: var(--tg-theme-secondary-bg-color, #f3f4f6); }
+
+  /* Izchil bosish javobi */
+  .tappable { @apply transition-transform duration-150 active:scale-95 cursor-pointer; }
+
+  /* Floating action button */
+  .fab {
+    @apply fixed flex items-center justify-center rounded-full border-none cursor-pointer;
+    transition: transform 0.18s cubic-bezier(0.22,1,0.36,1), box-shadow 0.18s ease;
+  }
+}
+
+/* ── Hover (faqat sichqonchali qurilmalar — Telegram Desktop/Web) ──────── */
+@media (hover: hover) and (pointer: fine) {
+  .card:hover {
+    box-shadow: 0 2px 6px rgba(17,24,39,0.06), 0 16px 38px rgba(17,24,39,0.12);
+  }
+  .tappable:hover { transform: translateY(-3px); }
+  .list-item:hover { background: var(--tg-theme-secondary-bg-color, #f3f4f6); }
+
+  .btn-primary:hover, .btn-success:hover, .btn-danger:hover {
+    transform: translateY(-1.5px);
+    filter: brightness(1.06) saturate(1.05);
+  }
+  .btn-ghost:hover { transform: translateY(-1.5px); filter: brightness(0.97); }
+
+  .fab:hover {
+    transform: scale(1.08) rotate(90deg);
+    box-shadow: 0 12px 34px rgba(37,99,235,0.55), 0 3px 10px rgba(15,23,42,0.2);
+  }
+
+  .input:hover { border-color: rgba(37,99,235,0.35); }
+
+  .card-hero:hover, .card-hero-trust:hover { transform: translateY(-2px); }
+}
+
+/* ── Skeleton shimmer (FUNKSIONAL — reduced-motion da ham qoladi) ────── */
+.skeleton {
+  border-radius: 1rem;
+  background: linear-gradient(90deg,
+    var(--tg-theme-secondary-bg-color, #e9ebef) 25%,
+    var(--tg-theme-bg-color,           #f5f6f8) 50%,
+    var(--tg-theme-secondary-bg-color, #e9ebef) 75%);
+  background-size: 600px 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+/* ── Scrollbar ────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { display: none; }
+* { scrollbar-width: none; }
+
+/* ── Avatar gradients ────────────────────────────────────────────────── */
+.avatar-blue   { background: linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%); }
+.avatar-violet { background: linear-gradient(135deg, #8B5CF6 0%, #6D28D9 100%); }
+.avatar-red    { background: linear-gradient(135deg, #F87171 0%, #DC2626 100%); }
+.avatar-green  { background: linear-gradient(135deg, #34D399 0%, #059669 100%); }
+.avatar-amber  { background: linear-gradient(135deg, #FBBF24 0%, #D97706 100%); }
+
+/* ── Row stagger (ro'yxat qatorlari ketma-ket kirib keladi) ──────────── */
+.row-stagger > * { animation: rowIn 0.42s cubic-bezier(0.22,1,0.36,1) backwards; }
+.row-stagger > *:nth-child(1)  { animation-delay: 0.00s; }
+.row-stagger > *:nth-child(2)  { animation-delay: 0.04s; }
+.row-stagger > *:nth-child(3)  { animation-delay: 0.08s; }
+.row-stagger > *:nth-child(4)  { animation-delay: 0.12s; }
+.row-stagger > *:nth-child(5)  { animation-delay: 0.16s; }
+.row-stagger > *:nth-child(6)  { animation-delay: 0.20s; }
+.row-stagger > *:nth-child(7)  { animation-delay: 0.24s; }
+.row-stagger > *:nth-child(8)  { animation-delay: 0.28s; }
+.row-stagger > *:nth-child(9)  { animation-delay: 0.32s; }
+.row-stagger > *:nth-child(10) { animation-delay: 0.36s; }
+.row-stagger > *:nth-child(11) { animation-delay: 0.40s; }
+.row-stagger > *:nth-child(12) { animation-delay: 0.44s; }
+.row-stagger > *:nth-child(13) { animation-delay: 0.48s; }
+.row-stagger > *:nth-child(14) { animation-delay: 0.52s; }
+
+/* ── Keyframes ─────────────────────────────────────────────────────────── */
+@keyframes shimmer { 0% { background-position: -600px 0; } 100% { background-position: 600px 0; } }
+@keyframes slideUp { from { opacity: 0; transform: translateY(22px); } to { opacity: 1; transform: none; } }
+@keyframes fadeIn  { from { opacity: 0; } to { opacity: 1; } }
+@keyframes sheetUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+@keyframes scaleIn { from { transform: scale(0.92); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+@keyframes rise    { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+@keyframes rowIn   { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@keyframes moneyIn { 0% { opacity: 0; transform: scale(0.85); } 60% { opacity: 1; transform: scale(1.05); } 100% { transform: scale(1); } }
+@keyframes stampIn { 0% { opacity: 0; transform: scale(0.55) rotate(-16deg); } 60% { opacity: 1; transform: scale(1.1) rotate(3deg); } 100% { opacity: 1; transform: scale(1) rotate(0); } }
+@keyframes sheen   { 0% { transform: translateX(-120%) skewX(-18deg); } 60% { transform: translateX(220%) skewX(-18deg); } 100% { transform: translateX(220%) skewX(-18deg); } }
+@keyframes floaty  { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
+
+.animate-slide-up { animation: slideUp 0.42s cubic-bezier(0.22,1,0.36,1) backwards; }
+.animate-fade-in  { animation: fadeIn  0.2s  ease-out; }
+.animate-sheet-up { animation: sheetUp 0.38s cubic-bezier(0.32,0.72,0,1); }
+.animate-scale-in { animation: scaleIn 0.24s cubic-bezier(0.22,1,0.36,1) backwards; }
+.animate-rise     { animation: rise    0.5s  cubic-bezier(0.22,1,0.36,1) backwards; }
+.animate-money-in { animation: moneyIn 0.45s cubic-bezier(0.22,1,0.36,1); }
+.animate-stamp-in { animation: stampIn 0.5s  cubic-bezier(0.34,1.56,0.64,1) forwards; }
+.animate-floaty   { animation: floaty  3.5s  ease-in-out infinite; }
+
+/* Qo'lda stagger kechikishlari */
+.stagger-1 { animation-delay: 0.06s; }
+.stagger-2 { animation-delay: 0.12s; }
+.stagger-3 { animation-delay: 0.18s; }
+.stagger-4 { animation-delay: 0.24s; }
+
+/* ── Reduced motion: dekorativ animatsiyalar o'chadi, skeleton qoladi ── */
+@media (prefers-reduced-motion: reduce) {
+  .animate-slide-up, .animate-fade-in, .animate-sheet-up, .animate-scale-in,
+  .animate-rise, .animate-money-in, .animate-stamp-in, .animate-floaty,
+  .row-stagger > *,
+  .card-hero::before, .card-hero-trust::before {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+  .tappable, .btn-primary, .btn-ghost, .btn-danger, .btn-success { transition: none !important; }
+}
