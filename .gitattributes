@@ -1,2 +1,10 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Docker va shell fayllari Windows'da ham LF bo'lib qolsin —
+# CRLF bo'lsa Linux image ichida skript/parser xato beradi
+Dockerfile text eol=lf
+*.dockerfile text eol=lf
+.dockerignore text eol=lf
+Procfile text eol=lf
+*.sh text eol=lf
