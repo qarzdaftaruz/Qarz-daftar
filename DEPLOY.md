@@ -32,7 +32,13 @@ qo'lda hech narsa qilish shart emas.
 
 ## 2️⃣ Railway (backend + bot)
 
-**Root Directory:** `backend`
+**Root Directory:** bo'sh qoldiring (`/` — repo ildizi).
+
+Ildizdagi `Dockerfile` + `railway.json` `backend/` ni quradi. Railway'ning
+avtomatik aniqlagichi (Railpack) ildizda ilova topa olmay
+`Railpack could not determine how to build the app` xatosini bergani uchun
+shunday qilingan. Agar Root Directory `backend` ga qo'yilgan bo'lsa — uni
+**bo'shatib qo'ying**, aks holda ildizdagi `Dockerfile` topilmaydi.
 
 ### Variables (Settings → Variables)
 
