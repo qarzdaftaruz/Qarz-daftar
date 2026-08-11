@@ -29,4 +29,4 @@ Disallow: /
 User-agent: CCBot
 Disallow: /
 
-Sitemap: https://qarzdaftar.vercel.app/sitemap.xml
+Sitemap: https://qarz-daftar-dl3t.vercel.app/sitemap.xml
