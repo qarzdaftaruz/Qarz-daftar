@@ -29,6 +29,31 @@ _OVERDUE_FILL = PatternFill("solid", fgColor="FEE2E2")
 _CLOSED_FILL = PatternFill("solid", fgColor="ECFDF5")
 
 
+# XAVFSIZLIK: openpyxl `=` bilan boshlangan matnni FORMULA katagi qilib
+# yozadi. Ya'ni mijoz nomiga yoki qarz izohiga `=HYPERLINK(...)` yozib
+# qo'yish mumkin edi va hisobotni ochgan odam (do'kondor yoki super
+# admin) o'sha formulani ishga tushirardi.
+#
+# `+`, `-`, `@` faqat CSV import qilinganda xavfli — .xlsx faylida ular
+# oddiy matn bo'lib qoladi. Shuning uchun ular tegilmaydi: aks holda
+# har bir `+998...` telefon raqami oldida ortiqcha apostrof chiqardi.
+_RISKY_PREFIXES = ("=", "\t", "\r", "\n")
+
+
+def _txt(value) -> str:
+    """Foydalanuvchi kiritgan matnni katakka xavfsiz yozish.
+
+    Xavfli belgi bilan boshlansa oldiga apostrof qo'yiladi — Excel uni
+    oddiy matn sifatida ko'rsatadi, formula sifatida bajarmaydi.
+    """
+    if value is None:
+        return ""
+    text = str(value)
+    if text.startswith(_RISKY_PREFIXES):
+        return "'" + text
+    return text
+
+
 def _dt(value: Optional[datetime]) -> str:
     """Sanani Toshkent vaqtida, Excel o'qiy oladigan ko'rinishda."""
     if not value:
@@ -52,7 +77,7 @@ def _sheet_name(title: str) -> str:
 def _write_sheet(ws, title: str, headers: list[str], rows: Iterable[list], widths: list[int]):
     ws.title = _sheet_name(title)
 
-    ws.append([title])
+    ws.append([_txt(title)])
     ws["A1"].font = _TITLE_FONT
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
     ws.append([f"Yuklangan: {_dt(utcnow())} (Toshkent)"])
@@ -100,8 +125,8 @@ def build_shop_report(shop_name: str, clients: list[dict], debts: list[dict]) ->
         [
             [
                 i,
-                c["full_name"],
-                c["phone"],
+                _txt(c["full_name"]),
+                _txt(c["phone"]),
                 c["active_debts"],
                 c["total_remaining"],
                 c["total_paid"],
@@ -135,10 +160,10 @@ def build_shop_report(shop_name: str, clients: list[dict], debts: list[dict]) ->
          "Holat", "Muddat", "Izoh", "Yaratilgan"],
         [
             [
-                d["debt_number"], d["client_name"], d["client_phone"],
+                _txt(d["debt_number"]), _txt(d["client_name"]), _txt(d["client_phone"]),
                 d["amount"], d["paid_amount"], d["remaining"],
                 debt_status_label(d["status"]), _date(d["due_date"]),
-                d["note"] or "", _dt(d["created_at"]),
+                _txt(d["note"]), _dt(d["created_at"]),
             ]
             for d in debts
         ],
@@ -172,7 +197,7 @@ def build_shops_report(shops: list[dict]) -> bytes:
          "Faol qarzlar", "Trial tugashi", "Obuna tugashi", "Ro'yxatdan o'tgan"],
         [
             [
-                i, s["name"], s["owner"], s["owner_phone"], s["status"],
+                i, _txt(s["name"]), _txt(s["owner"]), _txt(s["owner_phone"]), s["status"],
                 s["client_count"], s["active_debts"],
                 _date(s["trial_end"]), _date(s["subscription_end"]), _dt(s["created_at"]),
             ]

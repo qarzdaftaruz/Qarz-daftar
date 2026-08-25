@@ -2,13 +2,13 @@ import { useState, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { useParams, useNavigate } from 'react-router-dom'
 import { tma } from '../../lib/tma'
-import { ownerApi } from '../../lib/api'
+import { ownerApi, errorMessage } from '../../lib/api'
 import { useAuth } from '../../hooks/useAuth'
 import { useTimedState } from '../../hooks/useTimedState'
 import { fmt, statusBadge, statusLabel, statusEmoji } from '../../lib/utils'
 import Sheet from '../../components/ui/Sheet'
 import ConfirmStamp from '../../components/ui/ConfirmStamp'
-import { Plus, CreditCard, Trash2, CheckCheck, Phone, ArrowLeft, ArrowDownLeft, ArrowUpRight } from 'lucide-react'
+import { Plus, CreditCard, Trash2, CheckCheck, Phone, ArrowLeft, ArrowDownLeft, ArrowUpRight, BellRing } from 'lucide-react'
 
 const STATUS_GRADIENT = {
   open:     'linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%)',
@@ -43,6 +43,8 @@ export default function ClientDetail() {
   const [debtForm, setDebtForm] = useState({ amount: '', due_date: '', note: '' })
   const [payAmount, setPayAmount] = useState('')
   const [saving, setSaving]     = useState(false)
+  const [reminding, setReminding] = useState(false)
+  const [toast, setToast]       = useTimedState('')
   const [warning, setWarning]   = useTimedState('')
   const [stamp, setStamp]       = useState(null)   // { label } — "TASDIQLANDI" muhri
 
@@ -116,6 +118,21 @@ export default function ClientDetail() {
     } finally { setSaving(false) }
   }
 
+  // Qo'lda eslatma. Avtomatik eslatma har kuni ketadi; bu tugma
+  // "hoziroq eslat" uchun. Server tomonda kulish oralig'i (cooldown) bor.
+  const sendReminder = async () => {
+    setReminding(true)
+    try {
+      await ownerApi.remind(currentShopId, id)
+      tma.haptic('success')
+      setToast('Eslatma yuborildi')
+      await load()
+    } catch (e) {
+      tma.haptic('error')
+      setToast(errorMessage(e, 'Eslatma yuborilmadi'))
+    } finally { setReminding(false) }
+  }
+
   const archiveClient = async () => {
     if (!confirm(`${client.full_name} ni o'chirasizmi?`)) return
     await ownerApi.delClient(currentShopId, id)
@@ -138,6 +155,7 @@ export default function ClientDetail() {
 
   // To'langan (yopiq) qarzlar do'kon egasiga ko'rinmaydi — faqat faol qarzlar
   const activeDebts = client.debts.filter(d => ['open', 'partial', 'overdue'].includes(d.status))
+  const hasOverdue  = activeDebts.some(d => d.status === 'overdue')
 
   // Hodisalar lentasi: qarz oldi (+) va to'lov (−), vaqt bo'yicha ketma-ket
   const debtEvents = activeDebts.map(d => ({ kind: 'debt', amount: d.amount, date: d.created_at, due: d.due_date, note: d.note }))
@@ -275,18 +293,44 @@ export default function ClientDetail() {
       </div>
 
       {activeDebts.length > 0 && (
-        <div style={{ padding: '0 16px 10px' }}>
+        <div style={{ padding: '0 16px 10px', display: 'flex', gap: 10 }}>
+          <button
+            onClick={sendReminder}
+            disabled={reminding}
+            style={{
+              flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7,
+              padding: '10px 12px', borderRadius: 16, fontSize: 13, fontWeight: 700,
+              border: 'none', cursor: reminding ? 'default' : 'pointer',
+              background: hasOverdue ? '#fee2e2' : '#fef3c7',
+              color: hasOverdue ? '#b91c1c' : '#92400e',
+              opacity: reminding ? 0.6 : 1,
+            }}
+          >
+            <BellRing size={15} /> {reminding ? 'Yuborilmoqda…' : 'Eslatma yuborish'}
+          </button>
           <button
             onClick={() => setClearConfirm(true)}
             style={{
-              width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7,
-              padding: '10px 16px', borderRadius: 16, fontSize: 13, fontWeight: 700,
+              flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7,
+              padding: '10px 12px', borderRadius: 16, fontSize: 13, fontWeight: 700,
               border: 'none', cursor: 'pointer',
               background: '#dcfce7', color: '#15803d',
             }}
           >
-            <CheckCheck size={15} /> Umumiy qarzni yopish
+            <CheckCheck size={15} /> Qarzni yopish
           </button>
+        </div>
+      )}
+
+      {toast && (
+        <div style={{ padding: '0 16px 10px' }}>
+          <div style={{
+            fontSize: 13, lineHeight: 1.45, padding: '10px 14px', borderRadius: 12,
+            background: 'var(--tg-theme-secondary-bg-color)',
+            color: 'var(--tg-theme-text-color)',
+          }}>
+            {toast}
+          </div>
         </div>
       )}
 

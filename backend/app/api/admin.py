@@ -21,16 +21,23 @@ from app.core.ratelimit import login_rate_limit, limiter, client_ip
 from app.core import audit, cache
 from app.config import settings
 from app.utils.helpers import (
-    generate_debt_number, format_money, notify_debtor, debt_notification,
-    safe_regex, month_starts, month_label, esc, notify_telegram,
-    to_naive_utc, parse_due_date,
+    generate_debt_number, format_money, debt_notification,
+    safe_regex, month_starts, month_label, esc,
+    to_naive_utc, parse_due_date, debt_status_for, subscription_expired,
+    restart_trial_if_expired, notify_debtor_bg, notify_telegram_bg,
 )
+from app.utils import reminders
 
 router = APIRouter(prefix="/api/admin")
 logger = logging.getLogger(__name__)
 
 _ACTIVE = ["open", "partial", "overdue"]
 MAX_PAGE_SIZE = 100
+
+# Bitta mijoz sahifasida ko'rsatiladigan maksimal yozuvlar.
+# Chegarasiz yuklash uzoq yillik mijozda xotirani to'ldirardi.
+MAX_CLIENT_DEBTS = 300
+MAX_CLIENT_PAYMENTS = 200
 
 
 def _oid(value: str, label: str = "ID") -> PydanticObjectId:
@@ -353,6 +360,9 @@ async def get_shops(
                 max(0, settings.SHOP_PURGE_DAYS - (utcnow() - s.deleted_at).days)
                 if s.deleted_at else None
             ),
+            # Obuna muddati tugaganmi — avtomatik to'xtatilganlar ajralib tursin
+            "is_expired": subscription_expired(s),
+            "expired_at": s.expired_at.isoformat() if s.expired_at else None,
         })
     return {"shops": result, "total": total}
 
@@ -378,22 +388,48 @@ async def _audit_shop(admin, request, action: str, shop: Shop, what: str, **meta
 
 
 async def _notify_owner(shop: Shop, msg: str):
+    # TEZLIK: Telegram javobini kutmaymiz — admin tugmasi darhol javob bersin
     owner = await User.get(shop.owner_id)
     if owner:
-        await notify_telegram(owner.telegram_id, msg)
+        notify_telegram_bg(owner.telegram_id, msg)
 
 
 class ReasonBody(BaseModel):
     reason: Optional[str] = Field(default=None, max_length=300)
 
 
-@router.post("/shops/{sid}/approve")
-async def approve(sid: str, request: Request, current: AdminAuth = Depends(get_current_admin)):
+async def _get_live_shop(sid: str) -> Shop:
+    """Do'konni oladi; «chiqindi qutisi»dagi bo'lsa amalni rad etadi.
+
+    XATO TUZATILDI: ilgari `approve`/`block`/`reject` do'kon holatini
+    umuman tekshirmasdi. O'chirilgan do'konni «tasdiqlash» uni faol
+    qilib qo'yardi, lekin `deleted_at` joyida qolardi — natijada do'kon
+    ishlab turgan holda panelda «N kundan keyin butunlay o'chadi» deb
+    ko'rinardi va tozalash vazifasi uni hech qachon topmasdi.
+    Qaytarish uchun faqat bitta to'g'ri yo'l bor: «Tiklash» tugmasi.
+    """
     shop = await Shop.get(_oid(sid, "Do'kon"))
     if not shop:
         raise HTTPException(404, "Do'kon topilmadi")
+    if shop.status == ShopStatus.DELETED:
+        raise HTTPException(
+            400,
+            "Do'kon o'chirilgan. Avval «Tiklash» tugmasi bilan chiqindi qutisidan qaytaring.",
+        )
+    return shop
+
+
+@router.post("/shops/{sid}/approve")
+async def approve(sid: str, request: Request, current: AdminAuth = Depends(get_current_admin)):
+    shop = await _get_live_shop(sid)
     shop.status = ShopStatus.ACTIVE
     shop.reject_reason = None
+    # Ilgari bloklangan bo'lsa sabab qolib ketardi va panelda
+    # "faol, lekin blok sababi bor" degan ziddiyat ko'rinardi
+    shop.block_reason = None
+    # Tasdiqlash kechikkan bo'lsa sinov muddati noldan boshlanadi —
+    # do'kondor admin sekinligi uchun jazolanmasin
+    restart_trial_if_expired(shop)
     shop.updated_at = utcnow()
     await shop.save()
     await _notify_owner(
@@ -406,9 +442,7 @@ async def approve(sid: str, request: Request, current: AdminAuth = Depends(get_c
 
 @router.post("/shops/{sid}/reject")
 async def reject(sid: str, request: Request, body: ReasonBody = ReasonBody(), current: AdminAuth = Depends(get_current_admin)):
-    shop = await Shop.get(_oid(sid, "Do'kon"))
-    if not shop:
-        raise HTTPException(404, "Do'kon topilmadi")
+    shop = await _get_live_shop(sid)
     shop.status = ShopStatus.REJECTED
     shop.reject_reason = body.reason
     shop.updated_at = utcnow()
@@ -423,9 +457,7 @@ async def reject(sid: str, request: Request, body: ReasonBody = ReasonBody(), cu
 
 @router.post("/shops/{sid}/block")
 async def block(sid: str, request: Request, body: ReasonBody = ReasonBody(), current: AdminAuth = Depends(get_current_admin)):
-    shop = await Shop.get(_oid(sid, "Do'kon"))
-    if not shop:
-        raise HTTPException(404, "Do'kon topilmadi")
+    shop = await _get_live_shop(sid)
     shop.status = ShopStatus.BLOCKED
     shop.block_reason = body.reason
     shop.updated_at = utcnow()
@@ -440,11 +472,19 @@ async def block(sid: str, request: Request, body: ReasonBody = ReasonBody(), cur
 
 @router.post("/shops/{sid}/unblock")
 async def unblock(sid: str, request: Request, current: AdminAuth = Depends(get_current_admin)):
-    shop = await Shop.get(_oid(sid, "Do'kon"))
-    if not shop:
-        raise HTTPException(404, "Do'kon topilmadi")
+    shop = await _get_live_shop(sid)
+
+    # Obuna muddati tugagan bo'lsa blokdan chiqarishning foydasi yo'q:
+    # do'kon baribir ochilmaydi va keyingi tekshiruvda qayta bloklanadi.
+    if subscription_expired(shop):
+        raise HTTPException(
+            400,
+            "Obuna muddati tugagan — avval «Uzaytirish» tugmasi bilan muddatni uzaytiring.",
+        )
+
     shop.status = ShopStatus.ACTIVE
     shop.block_reason = None
+    shop.expired_at = None
     shop.updated_at = utcnow()
     await shop.save()
     await _notify_owner(shop, f"✅ Do'koningiz blokdan chiqarildi!\n🏪 {esc(shop.name)}")
@@ -458,9 +498,7 @@ class ExtendBody(BaseModel):
 
 @router.post("/shops/{sid}/extend")
 async def extend(sid: str, request: Request, body: ExtendBody = ExtendBody(), current: AdminAuth = Depends(get_current_admin)):
-    shop = await Shop.get(_oid(sid, "Do'kon"))
-    if not shop:
-        raise HTTPException(404, "Do'kon topilmadi")
+    shop = await _get_live_shop(sid)
     now = utcnow()
     end = shop.subscription_end or shop.trial_end
     if end < now:
@@ -468,6 +506,10 @@ async def extend(sid: str, request: Request, body: ExtendBody = ExtendBody(), cu
     shop.subscription_end = end + timedelta(days=body.days)
     shop.status = ShopStatus.ACTIVE
     shop.warning_sent = False
+    # Muddat tugagani uchun to'xtatilgan bo'lsa — sabab ham tozalanadi
+    shop.expired_at = None
+    if shop.block_reason == "Obuna muddati tugadi":
+        shop.block_reason = None
     shop.updated_at = now
     await shop.save()
     await _notify_owner(
@@ -836,7 +878,11 @@ async def super_search(q: str = "", _: AdminAuth = Depends(get_current_super_adm
     # Foydalanuvchi kiritgan matn escape qilinadi (ReDoS / regex injeksiya himoyasi)
     pattern = safe_regex(q)
 
-    shops = await Shop.find({"name": {"$regex": pattern, "$options": "i"}}).limit(20).to_list()
+    # O'chirilgan do'kon qidiruvda chiqmasin — u «chiqindi qutisi»da
+    shops = await Shop.find({
+        "name": {"$regex": pattern, "$options": "i"},
+        "status": {"$ne": ShopStatus.DELETED.value},
+    }).limit(20).to_list()
     shop_ids = [s.id for s in shops]
     owners = {
         o.id: o for o in await User.find(In(User.id, list({s.owner_id for s in shops}))).to_list()
@@ -932,7 +978,8 @@ async def super_client(cid: str, _: AdminAuth = Depends(get_current_super_admin)
         raise HTTPException(404, "Mijoz topilmadi")
     shop = await Shop.get(client.shop_id)
 
-    debts = await Debt.find(Debt.client_id == client.id).sort(+Debt.created_at).to_list()
+    # Chegarasiz yuklash xotirani to'ldirishi mumkin (uzoq yillik mijoz)
+    debts = await Debt.find(Debt.client_id == client.id)         .sort(+Debt.created_at).limit(MAX_CLIENT_DEBTS).to_list()
     debt_list = [
         {
             "id": str(d.id),
@@ -948,7 +995,7 @@ async def super_client(cid: str, _: AdminAuth = Depends(get_current_super_admin)
         for d in debts
     ]
     active = [d for d in debt_list if d["status"] in _ACTIVE]
-    payments = await Payment.find(Payment.client_id == client.id).sort(-Payment.created_at).limit(200).to_list()
+    payments = await Payment.find(Payment.client_id == client.id)         .sort(-Payment.created_at).limit(MAX_CLIENT_PAYMENTS).to_list()
 
     return {
         "id": str(client.id),
@@ -992,16 +1039,19 @@ async def super_add_debt(cid: str, body: SuperDebtBody, request: Request,
     shop = await Shop.get(client.shop_id)
 
     due_date = parse_due_date(body.due_date)
+    urgent, urgency_text = reminders.due_urgency(due_date)
     number = await generate_debt_number(client.shop_id)
     debt = await Debt(
         debt_number=number, shop_id=client.shop_id, client_id=client.id,
         amount=body.amount, remaining=body.amount, due_date=due_date,
         note=body.note, status=DebtStatus.OPEN,
+        due_reminder_sent=urgent,
     ).insert()
 
-    await notify_debtor(
+    notify_debtor_bg(
         client.phone,
-        debt_notification(shop.name if shop else "Do'kon", body.amount, due_date, debt.note),
+        debt_notification(shop.name if shop else "Do'kon", body.amount, due_date, debt.note)
+        + urgency_text,
     )
     await _audit_debt(
         current, request, "debt.create", debt, client,
@@ -1026,24 +1076,31 @@ async def super_edit_debt(did: str, body: SuperEditDebtBody, request: Request,
     data = body.model_dump(exclude_unset=True)
     before = {"amount": debt.amount, "due_date": str(debt.due_date), "note": debt.note}
 
-    if "amount" in data and data["amount"] is not None:
+    amount_changed = "amount" in data and data["amount"] is not None
+    if amount_changed:
         if data["amount"] < debt.paid_amount:
             raise HTTPException(400, f"Miqdor to'langan summadan ({format_money(debt.paid_amount)}) kam bo'lmasligi kerak")
         debt.amount = data["amount"]
         debt.remaining = debt.amount - debt.paid_amount
-        if debt.remaining == 0:
-            debt.status = DebtStatus.CLOSED
-        elif debt.paid_amount > 0:
-            debt.status = DebtStatus.PARTIAL
-        else:
-            debt.status = DebtStatus.OPEN
 
     if "due_date" in data:
         debt.due_date = parse_due_date(data["due_date"])
-        # Muddat o'zgardi — qarzdorga yangi eslatma yuborilsin
+        # Muddat o'zgardi — oldindan ogohlantirish va kunlik eslatma
+        # hisoblagichi noldan boshlansin
         debt.due_reminder_sent = False
+        debt.overdue_notified_at = None
+        debt.overdue_notice_count = 0
     if "note" in data:
         debt.note = data["note"]
+
+    # XATO TUZATILDI: ilgari holat faqat summaga qarab hisoblanardi —
+    # muddati o'tgan qarz tahrirdan keyin `open` bo'lib qolardi va
+    # eslatmalardan tushib ketardi
+    if amount_changed or "due_date" in data:
+        if debt.status not in (DebtStatus.ARCHIVED,):
+            debt.status = DebtStatus(
+                debt_status_for(debt.remaining, debt.paid_amount, debt.due_date)
+            )
 
     debt.updated_at = utcnow()
     await debt.save()
@@ -1125,6 +1182,7 @@ ACTION_LABELS = {
     "shop.delete":            "Do'kon o'chirildi",
     "shop.restore":           "Do'kon qaytarildi",
     "shop.purge":             "Do'kon butunlay yo'q qilindi",
+    "shop.expired":           "Obuna muddati tugadi",
     "user.block":             "Foydalanuvchi bloklandi",
     "user.unblock":           "Foydalanuvchi blokdan chiqdi",
     "promo.create":           "Promokod yaratildi",
@@ -1139,12 +1197,20 @@ ACTION_LABELS = {
     "client.archive":         "Mijoz arxivlandi",
     "client.clear_debts":     "Barcha qarzlar yopildi",
     "report.export":          "Excel hisobot yuklandi",
+    "debt.remind":            "Qarzdorga eslatma yuborildi",
+    "profile.phone_add":      "Telefon raqam qo'shildi",
+    "profile.phone_update":   "Telefon raqam o'zgartirildi",
+    "profile.phone_remove":   "Telefon raqam olib tashlandi",
+    "profile.phone_reclaimed": "Raqam tasdiqlangan egasiga qaytarildi",
 }
 
 # Xavfsizlik uchun muhim, ro'yxatda ajratib ko'rsatiladigan amallar
 CRITICAL_ACTIONS = {
     "shop.delete", "shop.purge", "debt.delete", "admin.create", "admin.delete",
     "auth.login_failed", "auth.locked", "client.clear_debts", "auth.username_changed",
+    # Begona raqamni biriktirib boshqa odamning qarzlarini ko'rish urinishi
+    # aynan shu yozuvlardan aniqlanadi
+    "profile.phone_add", "profile.phone_update", "profile.phone_reclaimed",
 }
 
 
@@ -1163,9 +1229,16 @@ async def get_audit_log(
 
     skip, limit = _page(skip, limit)
     query: dict = {}
-    if action:
+    # XATO TUZATILDI: ilgari `critical_only` tanlangan amal filtrini
+    # jimgina o'chirib yuborardi — admin bitta amalni qidirsa,
+    # javobda butunlay boshqa yozuvlar chiqardi.
+    if action and critical_only:
+        if action not in CRITICAL_ACTIONS:
+            return {"items": [], "total": 0, "actions": ACTION_LABELS}
         query["action"] = action
-    if critical_only:
+    elif action:
+        query["action"] = action
+    elif critical_only:
         query["action"] = {"$in": sorted(CRITICAL_ACTIONS)}
     if actor and actor.strip():
         query["actor_name"] = {"$regex": safe_regex(actor), "$options": "i"}
@@ -1222,7 +1295,10 @@ async def export_shops(
     """Do'konlar ro'yxatini Excel qilib yuklab olish."""
     from app.utils.excel import build_shops_report
 
-    query = {"status": status_filter.value} if status_filter else {}
+    query = (
+        {"status": status_filter.value} if status_filter
+        else {"status": {"$ne": ShopStatus.DELETED.value}}
+    )
     shops = await Shop.find(query).sort(-Shop.created_at).limit(5000).to_list()
     if not shops:
         raise HTTPException(404, "Eksport uchun do'kon topilmadi")

@@ -57,6 +57,9 @@ class Shop(Document):
     block_reason: Optional[str] = None
     reject_reason: Optional[str] = None
     warning_sent: bool = False
+    # Obuna muddati tugab, do'kon avtomatik to'xtatilgan sana.
+    # Admin uzaytirsa tozalanadi — takror xabar ketmasligi uchun.
+    expired_at: Optional[datetime] = None
     # Qarz raqamlarini (QRZ-0001) ketma-ket berish uchun hisoblagich.
     # Eski qarzlar o'chirilsa ham raqam takrorlanmaydi.
     debt_seq: int = 0
@@ -100,8 +103,15 @@ class Debt(Document):
     due_date: Optional[datetime] = None
     note: Optional[str] = None
     status: DebtStatus = DebtStatus.OPEN
-    # Qarzdorga "ertaga muddat tugaydi" eslatmasi yuborilganmi
+    # Qarzdorga "ertaga muddat tugaydi" eslatmasi yuborilganmi (bir marta)
     due_reminder_sent: bool = False
+    # Muddati o'tgan qarz uchun kunlik eslatma OXIRGI marta qachon ketgani.
+    # Server qayta ishga tushsa ham bir kunda ikki marta yuborilmaydi.
+    overdue_notified_at: Optional[datetime] = None
+    # Nechanchi kunlik eslatma ekani (xabarda ko'rsatiladi)
+    overdue_notice_count: int = 0
+    # Do'kondor qo'lda yuborgan oxirgi eslatma — spamning oldini oladi
+    manual_reminder_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
 
@@ -123,6 +133,10 @@ class Payment(Document):
 
 class PromoCodeUse(BaseModel):
     shop_id: PydanticObjectId
+    # Kim ishlatgani. Bitta foydalanuvchi bitta promokodni faqat bir marta
+    # ishlata olishini ATOMAR tekshirish uchun kerak — do'kon ID si bilan
+    # tekshirish poyga holatida (bir vaqtda ikkita so'rov) ishlamasdi.
+    owner_id: Optional[PydanticObjectId] = None
     used_at: datetime = Field(default_factory=utcnow)
 
 

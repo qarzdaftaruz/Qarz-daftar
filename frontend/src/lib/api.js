@@ -89,6 +89,8 @@ export const ownerApi = {
   updateClient: (shop_id, id, data) => tmaApi.put(`/tma/owner/clients/${id}`, data, { params: { shop_id } }),
   delClient:    (shop_id, id)       => tmaApi.delete(`/tma/owner/clients/${id}`, { params: { shop_id } }),
   clearDebts:   (shop_id, id)       => tmaApi.post(`/tma/owner/clients/${id}/clear-debts`, {}, { params: { shop_id } }),
+  // Qarzdorga qo'lda eslatma (avtomatik kunlik eslatmadan tashqari)
+  remind:       (shop_id, id)       => tmaApi.post(`/tma/owner/clients/${id}/remind`, {}, { params: { shop_id } }),
   addDebt:      (shop_id, data)     => tmaApi.post('/tma/owner/debts', data, { params: { shop_id } }),
   addPayment:   (shop_id, data)     => tmaApi.post('/tma/owner/payments', data, { params: { shop_id } }),
   payTotal:     (shop_id, data)     => tmaApi.post('/tma/owner/payments/total', data, { params: { shop_id } }),

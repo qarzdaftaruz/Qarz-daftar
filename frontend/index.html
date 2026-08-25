@@ -49,11 +49,22 @@
     <!-- ═══ Tezlik: shriftlar bloklamasdan yuklanadi ═══ -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <!-- Manrope faqat sarlavhalar uchun — 500 vazni ishlatilmaydi, olib tashlandi -->
+    <!--
+      Manrope faqat sarlavhalar uchun.
+      Inter 500 vazni butun ilovada ikki joyda ishlatilardi — olib tashlandi:
+      bu mobil internetda bitta ortiqcha shrift faylini yuklamaslik demak.
+    -->
     <link
       rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Manrope:wght@600;700;800&display=swap"
     />
+
+    <!--
+      TEZLIK: Telegram SDK boshqa domendan yuklanadi. Preconnect bo'lmasa
+      brauzer DNS + TLS ni faqat skriptga kelganda boshlaydi — mobil
+      internetda bu 200-400 ms. Endi u HTML tahlili bilan bir vaqtda ketadi.
+    -->
+    <link rel="preconnect" href="https://telegram.org" crossorigin />
 
     <!--
       Telegram Mini App SDK.

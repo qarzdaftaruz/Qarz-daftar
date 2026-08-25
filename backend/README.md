@@ -27,6 +27,33 @@ Railway loglarida `[xavfsizlik/...]` qatorlarini tekshiring.
 Muhim: `ENVIRONMENT=production` bo'lganda konfiguratsiya kuchsiz `SECRET_KEY`,
 namunaviy parollar va `TMA_DEV_MODE=true` bilan **ishga tushmaydi** — bu ataylab.
 
+## Proksi va IP cheklovlari
+
+`X-Forwarded-For` sarlavhasining **birinchi** qiymatini mijozning o'zi
+yozadi — proksi uni faqat oxiriga qo'shadi. Shuning uchun haqiqiy IP
+oxiridan `TRUSTED_PROXY_HOPS` qadam sanab olinadi:
+
+| Joylashuv | Qiymat |
+|---|---|
+| Railway (to'g'ridan-to'g'ri) | `1` |
+| Cloudflare → Railway | `2` |
+
+Noto'g'ri qiymat = IP bo'yicha barcha cheklovlar (login brute-force
+himoyasi ham) chetlab o'tiladi. Start paytida `security_report()` buni
+tekshiradi.
+
+Ikkinchi qatlam: `X-Forwarded-For` **faqat** to'g'ridan-to'g'ri ulangan
+tomon xususiy/loopback manzilda bo'lganda o'qiladi. Edge proksi ilova
+bilan doim ichki tarmoq orqali gaplashadi; manzil ommaviy bo'lsa —
+so'rov proksidan o'tmagan va sarlavhaga ishonib bo'lmaydi.
+
+## Rate limiter
+
+`app/core/ratelimit.py` — har bir kalit **o'z oynasini** saqlaydi.
+Bu muhim: umumiy limit oynasi 60 soniya, login oynasi 900, kunlik
+eksport oynasi 86400. Umumiy tozalash ularni bir xil oyna bilan
+qisqartirsa, uzun oynali cheklovlar amalda ishlamay qoladi.
+
 ## Audit log
 
 Muhim amallar (qarz o'chirish, do'kon o'chirish, admin qo'shish, kirish
@@ -53,6 +80,18 @@ ma'lumot tashish va kamroq borish**.
 | `/profile/me` (frontend) | Har sahifada qayta so'raladi | Sessiya davomida bir marta |
 | Excel yasash | Asosiy oqimni bloklardi | `asyncio.to_thread` — parallel ishlaydi |
 | Eski qarzlarni tozalash | Har bir qarz uchun 2 so'rov | 2 ta `delete_many` |
+| Do'kon egasi tekshiruvi (`owner_shop`) | Har so'rovda 2 ta so'rov | 5 soniyalik kesh |
+| Ommaviy eslatmalar | Har bir qarzdor uchun 3 so'rov (N+1) | Jami 3 ta so'rov |
+| Xavfsizlik middleware'lari | `BaseHTTPMiddleware` (so'rovga 3 ta task-group) | Sof ASGI — qo'shimcha task yo'q |
+| `/health` | Har chaqiruvda Atlas'ga `ping` | 5 soniyalik kesh |
+| Qarzdor sahifasi | Barcha qarz va to'lovlar (chegarasiz) | `MAX_DEBTS` / `MAX_PAYMENTS` |
+| Telegram xabarlari | So'rov ichida kutilardi (150–400 ms) | Fon navbati — so'rov darhol javob beradi |
+| Audit xabarnomasi | Har bir super adminga so'rov ichida | Fon navbati + takrorlanish cheklovi |
+| Arxiv tozalash | Bitta ulkan `$in` (16 MB chegarasi) | 1000 tadan bo'lib |
+
+Fon navbati: `app/core/tasks.py`. Navbat **cheklangan** (2000 ta) —
+to'lib qolsa vazifa tashlanadi va logga yoziladi, chunki cheksiz navbat
+Railway konteynerining xotirasini yeb qo'yadi.
 
 Indekslar `app/database.py` → `_ensure_indexes()` da. Eng muhimi
 `idx_client_shop_status_name` — mijozlar ro'yxati, dashboard, statistika
@@ -74,16 +113,62 @@ darhol o'chirishi mumkin (`DELETE /shops/{id}/purge`).
 
 | Ish | Vaqt (Toshkent) | Nima qiladi |
 |---|---|---|
-| `overdue` | har soat | Muddati o'tgan qarzlarni belgilaydi |
+| `overdue` | har soat | Muddati o'tgan qarzlarni `overdue` deb belgilaydi |
 | `warnings` | 08:00 | Obuna tugashiga 3 kun qolganda ogohlantiradi |
+| `expire` | 07:05 va 19:05 | **Obuna muddati tugagan do'konni to'xtatadi** |
 | `daily` | sozlamadagi vaqt | Do'kondorga kunlik hisobot |
-| `due_reminder` | 10:30 | **Qarzdorga** «ertaga muddat tugaydi» |
+| `overdue_reminder` | 09:30 | **Qarzdorga «muddat o'tdi» — HAR KUNI** |
+| `due_reminder` | 10:30 | **Qarzdorga** «bugun/ertaga muddat tugaydi» |
 | `monthly_report` | 1-sana 10:00 | **Do'kondorga Excel hisobot** |
 | `cleanup` | 00:30 | Eski yopiq qarzlarni tozalaydi |
 | `purge` | 01:00 | 30 kundan oshgan o'chirilgan do'konlarni yo'q qiladi |
 
 Ommaviy yuborishlar ketma-ket, `BULK_SEND_DELAY` tanaffusi bilan bajariladi —
 Telegram limitlari va Railway'ning bitta vCPU si uchun.
+
+## Qarzdorga eslatmalar
+
+Matnlar bitta joyda: `app/utils/reminders.py`. Keyinchalik SMS
+qo'shilganda o'zgartirish faqat shu faylda va `helpers.notify_debtor`
+ichida bo'ladi.
+
+| Eslatma | Qachon | Necha marta |
+|---|---|---|
+| Yangi qarz | qarz yozilgan zahoti | 1 marta |
+| «Bugun/ertaga muddat tugaydi» | muddatdan 1 kun oldin, 10:30 | 1 marta (`due_reminder_sent`) |
+| **«Muddat o'tdi»** | muddat o'tgan kundan boshlab **har kuni** 09:30 | to'lanmaguncha (`OVERDUE_REMINDER_MAX_DAYS` gacha) |
+| Qo'lda eslatma | do'kondor tugmani bosganda | `MANUAL_REMINDER_COOLDOWN_HOURS` da 1 marta |
+| To'lov / qarz yopilishi | amal bajarilganda | 1 marta |
+
+Muhim tafsilotlar:
+
+- **Muddatsiz qarzlar** avtomatik eslatmani ishga tushirmaydi, lekin
+  qarzdor umumiy qoldig'ini ko'rishi uchun xabarga qo'shiladi.
+- Bugun yozilgan va **bugun/ertaga** muddati tugaydigan qarz kunlik
+  jadvalga ulgurmaydi — shuning uchun ogohlantirish darhol yangi qarz
+  xabariga qo'shiladi (`reminders.due_urgency`).
+- Bir kunda ikki marta yubormaslik kafolati: `Debt.overdue_notified_at`
+  bugungi kun boshidan oldin bo'lgan qarzlargina olinadi. Server qayta
+  ishga tushsa ham takror ketmaydi.
+- Bitta qarzdorning bitta do'kondagi barcha qarzlari **bitta xabarda**
+  jamlanadi.
+- Bloklangan/muddati tugagan do'kon nomidan eslatma ketmaydi.
+
+## Obuna muddati nazorati
+
+`SUBSCRIPTION_ENFORCE=true` (standart) bo'lganda muddati tugagan do'kon:
+
+1. `expire` vazifasi uni `blocked` holatiga o'tkazadi
+   (`block_reason = "Obuna muddati tugadi"`), egasiga xabar ketadi,
+   audit logga `shop.expired` yoziladi.
+2. Vazifa ishlashini kutmasdan — `owner_shop` dependency har bir
+   so'rovda ham tekshiradi, ya'ni muddat tugagan zahoti panel yopiladi.
+3. Admin **«Uzaytirish»** bosganda hammasi tiklanadi. Muddati tugagan
+   do'konni «Blokdan chiqarish» bilan ochib bo'lmaydi — bu ataylab,
+   aks holda do'kon keyingi tekshiruvda qayta yopilardi.
+4. Admin tasdiqlashni kechiktirgan bo'lsa, **tasdiqlash paytida sinov
+   muddati noldan boshlanadi** — do'kondor admin sekinligi uchun
+   jazolanmaydi.
 
 ## Excel hisobotlar
 
@@ -130,7 +215,10 @@ backend/
 │   │   ├── security.py  # JWT, bcrypt, OTP
 │   │   └── scheduler.py # APScheduler — eslatmalar, arxivlash
 │   └── utils/
-│       └── helpers.py   # format_money, format_date va boshqalar
+│       ├── helpers.py   # format_money, format_date, xabar yuborish
+│       ├── reminders.py # qarzdorga ketadigan barcha eslatma matnlari
+│       ├── reports.py   # hisobot ma'lumotlarini yig'ish
+│       └── excel.py     # xlsx generatori
 ├── requirements.txt
 ├── .env.example
 └── run.py
@@ -252,10 +340,15 @@ web: uvicorn app.main:app --host 0.0.0.0 --port $PORT
 
 ## ⏰ Scheduler (APScheduler)
 
+To'liq jadval yuqorida — [Avtomatik vazifalar](#avtomatik-vazifalar-scheduler).
+
 | Vaqt | Vazifa |
 |---|---|
-| Har kuni 09:00 | Do'kon egalari + qarzdorlarga eslatma |
+| Har kuni 09:00 | Do'kondorga kunlik hisobot |
+| Har kuni 09:30 | **Qarzdorga «muddat o'tdi» eslatmasi (har kuni)** |
+| Har kuni 10:30 | Qarzdorga «bugun/ertaga muddat tugaydi» |
 | Har kuni 08:00 | Obuna tugashiga 3 kun qolganda ogohlantirish |
+| 07:05 va 19:05 | Obuna muddati tugagan do'konlarni to'xtatish |
 | Har soat | Muddati o'tgan qarzlar statusini yangilash |
 | Har kuni 00:30 | Eski arxivlangan qarzlarni tozalash |
 

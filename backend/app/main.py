@@ -18,6 +18,7 @@ from app.core.middleware import (
     SecurityHeadersMiddleware, BodySizeLimitMiddleware, GlobalRateLimitMiddleware,
 )
 from app.core.scheduler import setup_scheduler, scheduler
+from app.core import tasks
 
 logging.basicConfig(
     level=logging.INFO if settings.is_production else logging.DEBUG,
@@ -32,6 +33,42 @@ logger = logging.getLogger(__name__)
 _polling_task: asyncio.Task | None = None
 
 
+async def _warn_expired_shops() -> None:
+    """Obuna nazorati birinchi marta yoqilganda nima bo'lishini oldindan ko'rsatadi.
+
+    Bu tekshiruv hech narsani o'zgartirmaydi — faqat sanaydi. Deploy'dan
+    keyin loglarda "N ta do'kon to'xtatiladi" degan qatorni ko'rsangiz va
+    bu kutilmagan bo'lsa, vazifa ishlashidan oldin (07:05 / 19:05) muddatni
+    uzaytiring yoki SUBSCRIPTION_ENFORCE=false qo'ying.
+    """
+    if not settings.SUBSCRIPTION_ENFORCE:
+        logger.warning(
+            "[obuna] SUBSCRIPTION_ENFORCE=false — muddati tugagan do'konlar "
+            "to'xtatilmaydi, ya'ni trial tugagach ham foydalanish mumkin"
+        )
+        return
+    try:
+        from datetime import timedelta
+        from app.models import Shop, ShopStatus, utcnow
+
+        cutoff = utcnow() - timedelta(days=settings.SUBSCRIPTION_GRACE_DAYS)
+        n = await Shop.find({
+            "status": {"$in": [ShopStatus.ACTIVE.value, ShopStatus.PENDING.value]},
+            "$or": [
+                {"subscription_end": {"$ne": None, "$lt": cutoff}},
+                {"subscription_end": None, "trial_end": {"$lt": cutoff}},
+            ],
+        }).count()
+        if n:
+            logger.warning(
+                "[obuna] %s ta do'kon muddati tugagan — keyingi tekshiruvda "
+                "(07:05 / 19:05, Toshkent) avtomatik to'xtatiladi va egalariga xabar ketadi",
+                n,
+            )
+    except Exception as e:      # noqa: BLE001
+        logger.warning("[obuna] muddat tekshiruvi bajarilmadi: %s", e)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _polling_task
@@ -44,6 +81,8 @@ async def lifespan(app: FastAPI):
         )
 
     await init_db()
+    # Fon navbati — Telegram xabarlari so'rovni kutkazmasin
+    await tasks.start()
     setup_bot()
 
     webhook_url = settings.webhook_full_url
@@ -71,12 +110,17 @@ async def lifespan(app: FastAPI):
     s = await AppSettings.find_one()
     setup_scheduler(s.reminder_hour if s else 9, s.reminder_minute if s else 0)
 
+    await _warn_expired_shops()
+
     try:
         yield
     finally:
         logger.info("To'xtatilmoqda…")
         if scheduler.running:
             scheduler.shutdown(wait=False)
+
+        # Navbatdagi xabarlar yuborilib bo'lsin (qisqa muddat kutamiz)
+        await tasks.stop()
 
         if _polling_task and not _polling_task.done():
             await dp.stop_polling()
@@ -178,16 +222,37 @@ async def webhook(request: Request):
 
 # ─── Health ──────────────────────────────────────────────────────────────────
 
+# Bazani har bir healthcheck'da urintirmaymiz: Railway bu manzilni
+# tez-tez chaqiradi va har bir "ping" Atlas'ga alohida borish demak.
+# Muvaffaqiyatli natija bir necha soniya keshlanadi; xato bo'lsa
+# keshlanmaydi — nosozlik darhol ko'rinadi.
+_HEALTH_TTL = 5.0
+_health_cache: tuple[float, bool] = (0.0, False)
+
+
+async def _db_ok() -> bool:
+    global _health_cache
+    import time
+
+    expires, value = _health_cache
+    now = time.monotonic()
+    if value and expires > now:
+        return True
+    try:
+        from app.database import get_client
+        await get_client().admin.command("ping")
+        _health_cache = (now + _HEALTH_TTL, True)
+        return True
+    except Exception:      # noqa: BLE001
+        _health_cache = (0.0, False)
+        return False
+
+
 @app.get("/health", include_in_schema=False)
 @app.get("/healthz", include_in_schema=False)
 async def health():
     """Railway healthcheck — bazaga ulanish ham tekshiriladi."""
-    db_ok = True
-    try:
-        from app.database import get_client
-        await get_client().admin.command("ping")
-    except Exception:      # noqa: BLE001
-        db_ok = False
+    db_ok = await _db_ok()
     return JSONResponse(
         {"status": "ok" if db_ok else "degraded", "db": db_ok, "version": app.version},
         status_code=200 if db_ok else 503,

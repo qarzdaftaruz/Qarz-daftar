@@ -30,14 +30,25 @@ function cspPlugin(apiUrl) {
     name: 'inject-csp',
     apply: 'build',
     transformIndexHtml(html) {
-      return {
-        html,
-        tags: [{
-          tag: 'meta',
-          attrs: { 'http-equiv': 'Content-Security-Policy', content: csp },
+      const tags = [{
+        tag: 'meta',
+        attrs: { 'http-equiv': 'Content-Security-Policy', content: csp },
+        injectTo: 'head-prepend',
+      }]
+
+      // TEZLIK: backend boshqa domenda (Railway). Preconnect bo'lmasa
+      // birinchi API so'rovi DNS + TCP + TLS ni noldan boshlaydi.
+      // Endi u JS yuklanayotganda parallel bajariladi — mobil internetda
+      // birinchi ekran sezilarli tez ochiladi.
+      if (apiOrigin) {
+        tags.push({
+          tag: 'link',
+          attrs: { rel: 'preconnect', href: apiOrigin, crossorigin: '' },
           injectTo: 'head-prepend',
-        }],
+        })
       }
+
+      return { html, tags }
     },
   }
 }

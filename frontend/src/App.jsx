@@ -33,10 +33,17 @@ import BottomNav        from './components/layout/BottomNav'
 import Dashboard        from './pages/owner/Dashboard'
 import Clients          from './pages/owner/Clients'
 import ClientDetail     from './pages/owner/ClientDetail'
-import DebtorOverview   from './pages/debtor/Overview'
-import ShopStatusScreen from './pages/Pending'
-import NewShop          from './pages/NewShop'
-import Profile          from './pages/Profile'
+
+/**
+ * TEZLIK: quyidagi ekranlar birinchi ochilishda deyarli hech qachon
+ * kerak bo'lmaydi — do'kondor «Do'konlar»ni, qarzdor esa «Mijozlar»ni
+ * ko'rmaydi. Ilgari hammasi bitta boshlang'ich bundle'da edi va har bir
+ * foydalanuvchi keraksiz kodni yuklab olardi.
+ */
+const DebtorOverview   = lazyWithRetry(() => import('./pages/debtor/Overview'))
+const ShopStatusScreen = lazyWithRetry(() => import('./pages/Pending'))
+const NewShop          = lazyWithRetry(() => import('./pages/NewShop'))
+const Profile          = lazyWithRetry(() => import('./pages/Profile'))
 
 // Recharts'ga bog'liq ekranlar — kerak bo'lganda yuklanadi (lazy + retry)
 const Stats            = lazyWithRetry(() => import('./pages/owner/Stats'))
@@ -208,7 +215,11 @@ function TMARoutes() {
 
   // /new-shop har doim ochiq — bot deep-link va selector orqali keladi
   if (location.pathname === '/new-shop') {
-    return auth.loading ? <Spinner /> : <NewShop standalone={auth.shops.length === 0 && !auth.isDebtor} />
+    return auth.loading ? <Spinner /> : (
+      <Suspense fallback={<Spinner />}>
+        <NewShop standalone={auth.shops.length === 0 && !auth.isDebtor} />
+      </Suspense>
+    )
   }
 
   if (auth.loading) return <Spinner />
@@ -219,12 +230,12 @@ function TMARoutes() {
 
   // Hech narsa yo'q — to'g'ridan-to'g'ri do'kon ochish formasi
   if (!hasAnyShop && !auth.isDebtor) {
-    return <NewShop standalone />
+    return <Suspense fallback={<Spinner />}><NewShop standalone /></Suspense>
   }
 
   // Faol do'kon yo'q, qarzdor ham emas — holat ekrani
   if (!auth.canBeOwner && !auth.isDebtor) {
-    return <ShopStatusScreen />
+    return <Suspense fallback={<Spinner />}><ShopStatusScreen /></Suspense>
   }
 
   return auth.view === 'owner' ? <OwnerRoutes /> : <DebtorRoutes />

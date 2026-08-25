@@ -14,7 +14,62 @@ UZ_TZ = pytz.timezone("Asia/Tashkent")
 scheduler = AsyncIOScheduler(timezone=UZ_TZ)
 
 ACTIVE_STATUSES = ["open", "partial", "overdue"]
+UNPAID_STATUSES = ["open", "partial"]
 
+# Bitta ishga tushishda ko'rib chiqiladigan maksimal qarzlar soni.
+# Xotira himoyasi: baza o'sganda ham ish hajmi bashorat qilinadigan bo'ladi.
+MAX_BATCH = 5000
+
+
+# ─── Ommaviy eslatmalar uchun umumiy yordamchi ────────────────────────────────
+
+async def _reminder_context(debts: list) -> tuple[dict, dict, dict]:
+    """Qarzlar ro'yxati uchun mijoz/do'kon/foydalanuvchi jadvallari.
+
+    TEZLIK: ilgari har bir guruh uchun alohida `Client.get` va `Shop.get`
+    ketardi (N+1), ustiga har bir xabarda foydalanuvchini topish uchun
+    yana bitta so'rov. 500 qarzdorga eslatma ≈ 1500 ta borish edi.
+    Endi jami 3 ta so'rov.
+    """
+    from app.models import Shop, Client, ShopStatus
+    from app.utils.helpers import resolve_debtor_users
+
+    client_ids = list({d.client_id for d in debts})
+    shop_ids = list({d.shop_id for d in debts})
+    if not client_ids:
+        return {}, {}, {}
+
+    clients = {
+        c.id: c for c in
+        await Client.find(In(Client.id, client_ids), Client.status == "active").to_list()
+    }
+    shops = {
+        s.id: s for s in
+        await Shop.find(In(Shop.id, shop_ids), Shop.status == ShopStatus.ACTIVE).to_list()
+    }
+    users = await resolve_debtor_users([c.phone for c in clients.values()])
+    return clients, shops, users
+
+
+def _group_by_client_shop(debts: list) -> dict:
+    grouped: dict = {}
+    for d in debts:
+        grouped.setdefault((d.client_id, d.shop_id), []).append(d)
+    return grouped
+
+
+def _recipient(client, users: dict):
+    """Mijoz raqamiga mos bot foydalanuvchisi (raqam turli formatda bo'lishi mumkin)."""
+    from app.utils.helpers import phone_variants
+
+    for variant in phone_variants(client.phone):
+        user = users.get(variant)
+        if user:
+            return user
+    return None
+
+
+# ─── Do'kondorga kunlik hisobot ───────────────────────────────────────────────
 
 async def send_daily_reminders():
     """Belgilangan vaqtda do'kon egalariga kunlik hisobot."""
@@ -28,7 +83,7 @@ async def send_daily_reminders():
         try:
             today_debts = await Debt.find(
                 Debt.shop_id == shop.id,
-                In(Debt.status, ["open", "partial"]),
+                In(Debt.status, UNPAID_STATUSES),
                 Debt.due_date >= today_start,
                 Debt.due_date <= today_end,
             ).to_list()
@@ -44,17 +99,25 @@ async def send_daily_reminders():
             if not owner or not owner.telegram_id or owner.is_blocked:
                 continue
 
-            all_active = await Debt.find(
-                Debt.shop_id == shop.id, In(Debt.status, ACTIVE_STATUSES)
-            ).to_list()
-            remaining_total = sum(d.remaining for d in all_active)
+            # TEZLIK: umumiy qoldiq — bitta aggregation.
+            # Ilgari do'konning BARCHA faol qarzlari xotiraga yuklanardi.
+            rows = await Debt.get_motor_collection().aggregate([
+                {"$match": {"shop_id": shop.id, "status": {"$in": ACTIVE_STATUSES}}},
+                {"$group": {"_id": None, "total": {"$sum": "$remaining"}}},
+            ]).to_list(length=1)
+            remaining_total = rows[0]["total"] if rows else 0
 
             msg = f"☀️ <b>{esc(shop.name)}</b> — Kunlik hisobot\n" + "─" * 28 + "\n"
             if today_debts:
+                # N+1 o'rniga: kerakli mijozlar bitta so'rovda
+                shown = today_debts[:5]
+                names = {
+                    c.id: c.full_name for c in
+                    await Client.find(In(Client.id, [d.client_id for d in shown])).to_list()
+                }
                 msg += f"\n⚠️ <b>Bugun muddati tugaydi: {len(today_debts)} ta</b>\n"
-                for d in today_debts[:5]:
-                    c = await Client.get(d.client_id)
-                    msg += f"  • {esc(c.full_name) if c else '?'} — {format_money(d.remaining)}\n"
+                for d in shown:
+                    msg += f"  • {esc(names.get(d.client_id, '?'))} — {format_money(d.remaining)}\n"
                 if len(today_debts) > 5:
                     msg += f"  … va yana {len(today_debts) - 5} ta\n"
             if overdue:
@@ -67,10 +130,12 @@ async def send_daily_reminders():
             logger.error("Kunlik eslatma (shop=%s): %s", shop.id, e)
 
 
+# ─── Obuna: ogohlantirish va muddat nazorati ──────────────────────────────────
+
 async def check_subscription_warnings():
     """Obuna tugashiga 3 kun qolganda ogohlantirish."""
     from app.models import Shop, User, ShopStatus
-    from app.utils.helpers import days_until, esc, notify_telegram
+    from app.utils.helpers import days_left, esc, notify_telegram
 
     shops = await Shop.find(
         Shop.status == ShopStatus.ACTIVE, Shop.warning_sent == False  # noqa: E712
@@ -79,17 +144,27 @@ async def check_subscription_warnings():
     for shop in shops:
         try:
             end = shop.subscription_end or shop.trial_end
-            left = days_until(end)
+            left = days_left(end)
             if left > 3:
                 continue
             owner = await User.get(shop.owner_id)
             if not owner or not owner.telegram_id:
                 continue
+
+            # XATO TUZATILDI: `days_until` manfiy kunni 0 ga qisqartirgani uchun
+            # allaqachon tugagan obuna ham "0 kundan so'ng tugaydi" deb chiqardi.
+            if left < 0:
+                when = "muddati allaqachon tugagan"
+            elif left == 0:
+                when = "<b>bugun</b> tugaydi"
+            else:
+                when = f"<b>{left} kun</b>dan so'ng tugaydi"
+
             sent = await notify_telegram(
                 owner.telegram_id,
                 f"⚠️ <b>Obuna haqida</b>\n\n"
                 f"🏪 {esc(shop.name)}\n"
-                f"📅 Obunangiz <b>{left} kun</b>dan so'ng tugaydi.\n\n"
+                f"📅 Obunangiz {when}.\n\n"
                 f"Davom ettirish uchun admin bilan bog'laning.",
             )
             if sent:
@@ -100,6 +175,65 @@ async def check_subscription_warnings():
             logger.error("Obuna ogohlantirishi (shop=%s): %s", shop.id, e)
 
 
+async def expire_subscriptions():
+    """Muddati tugagan do'konlarni avtomatik to'xtatish.
+
+    XATO TUZATILDI: ilgari trial yoki obuna tugashi HECH QANDAY oqibatga
+    olib kelmasdi — admin qo'lda bloklamaguncha do'kon cheksiz ishlayverardi.
+    Ya'ni 7 kunlik sinovdan keyin ham tizimdan bepul foydalanish mumkin edi.
+    """
+    from app.config import settings
+    from app.models import Shop, User, ShopStatus
+    from app.core import audit
+    from app.utils.helpers import esc, notify_telegram
+
+    if not settings.SUBSCRIPTION_ENFORCE:
+        return
+
+    cutoff = utcnow() - timedelta(days=settings.SUBSCRIPTION_GRACE_DAYS)
+    shops = await Shop.find({
+        "status": {"$in": [ShopStatus.ACTIVE.value, ShopStatus.PENDING.value]},
+        "$or": [
+            {"subscription_end": {"$ne": None, "$lt": cutoff}},
+            {"subscription_end": None, "trial_end": {"$lt": cutoff}},
+        ],
+    }).to_list()
+    if not shops:
+        return
+
+    for shop in shops:
+        try:
+            now = utcnow()
+            shop.status = ShopStatus.BLOCKED
+            shop.block_reason = "Obuna muddati tugadi"
+            shop.expired_at = now
+            shop.warning_sent = False      # uzaytirilgach yana ogohlantirilsin
+            shop.updated_at = now
+            await shop.save()
+
+            owner = await User.get(shop.owner_id)
+            if owner and owner.telegram_id:
+                await notify_telegram(
+                    owner.telegram_id,
+                    f"⛔️ <b>Obuna muddati tugadi</b>\n\n"
+                    f"🏪 {esc(shop.name)}\n\n"
+                    f"Do'kon vaqtincha to'xtatildi. Ma'lumotlaringiz saqlanib turibdi — "
+                    f"davom ettirish uchun admin bilan bog'laning.",
+                )
+            await audit.log(
+                "shop.expired", actor_type="system", actor_name="Tizim",
+                entity_type="shop", entity_id=shop.id, entity_label=shop.name,
+                shop_id=shop.id,
+                summary=f"Do'kon «{shop.name}» obuna muddati tugagani uchun avtomatik to'xtatildi",
+            )
+        except Exception as e:      # noqa: BLE001
+            logger.error("Obuna muddati (shop=%s): %s", shop.id, e)
+
+    logger.info("%s ta do'kon obuna muddati tugagani uchun to'xtatildi", len(shops))
+
+
+# ─── Qarz holatini yangilash ──────────────────────────────────────────────────
+
 async def update_overdue():
     """Muddati o'tgan qarzlarni 'overdue' ga o'tkazish (bitta so'rovda)."""
     from app.models import Debt
@@ -107,37 +241,56 @@ async def update_overdue():
     now = utcnow()
     res = await Debt.get_motor_collection().update_many(
         {
-            "status": {"$in": ["open", "partial"]},
+            "status": {"$in": UNPAID_STATUSES},
             "due_date": {"$ne": None, "$lt": now},
         },
         {"$set": {"status": "overdue", "updated_at": now}},
     )
     if res.modified_count:
         logger.info("%s ta qarz 'overdue' holatiga o'tdi", res.modified_count)
+    return res.modified_count
+
+
+# ─── Tozalash ─────────────────────────────────────────────────────────────────
+
+CLEANUP_BATCH = 1000
 
 
 async def archive_cleanup():
-    """Eski yopiq qarzlarni va ularning to'lovlarini tozalash."""
+    """Eski yopiq qarzlarni va ularning to'lovlarini tozalash.
+
+    Bo'laklab bajariladi: ilgari barcha eski qarzlar bir vaqtda xotiraga
+    yuklanib, bitta ulkan `$in` so'rovi yasalardi. Bir necha yildan keyin
+    bu yuz minglab ID ga aylanadi — MongoDB'ning 16 MB so'rov chegarasiga
+    urilib, tozalash butunlay ishlamay qolardi.
+    """
     from app.models import Debt, Payment, AppSettings
 
     s = await AppSettings.find_one()
     months = s.archive_duration_months if s else 6
     cutoff = utcnow() - timedelta(days=months * 30)
 
-    old = await Debt.find(
-        In(Debt.status, ["closed", "archived"]), Debt.updated_at < cutoff
-    ).to_list()
-    if not old:
-        return
+    total = 0
+    while True:
+        old = await Debt.find(
+            In(Debt.status, ["closed", "archived"]), Debt.updated_at < cutoff
+        ).limit(CLEANUP_BATCH).to_list()
+        if not old:
+            break
 
-    ids = [d.id for d in old]
-    # Bitta so'rovda — ilgari har bir qarz uchun alohida so'rov ketardi
-    await Payment.get_motor_collection().delete_many({"debt_id": {"$in": ids}})
-    await Debt.get_motor_collection().delete_many({"_id": {"$in": ids}})
-    logger.info("%s ta eski qarz tozalandi", len(ids))
+        ids = [d.id for d in old]
+        await Payment.get_motor_collection().delete_many({"debt_id": {"$in": ids}})
+        await Debt.get_motor_collection().delete_many({"_id": {"$in": ids}})
+        total += len(ids)
 
+        if len(old) < CLEANUP_BATCH:
+            break
+        # Boshqa so'rovlar navbat kutib qolmasin
+        await asyncio.sleep(0)
 
-# ─── Chiqindi qutisini tozalash ───────────────────────────────────────────────
+    if total:
+        logger.info("%s ta eski qarz tozalandi", total)
+
 
 async def purge_deleted_shops():
     """O'chirilgan do'konlarni muddat tugagach butunlay yo'q qilish.
@@ -177,67 +330,58 @@ async def purge_deleted_shops():
             logger.error("Do'konni tozalashda xato (shop=%s): %s", shop.id, e)
 
 
-# ─── Qarzdorga eslatma ────────────────────────────────────────────────────────
+# ─── Qarzdorga eslatma: muddat yaqinlashdi ────────────────────────────────────
 
 async def send_due_reminders():
-    """Qarzdorga «ertaga muddat tugaydi» eslatmasi.
+    """«Bugun/ertaga muddat tugaydi» eslatmasi.
 
-    Ilgari eslatma faqat do'kondorga borardi. Qarzdorning o'ziga oldindan
-    xabar ketsa, to'lovlar sezilarli tezlashadi.
+    Ilgari faqat ERTANGI kun tekshirilardi. Natijada bugun yozilgan va
+    bugun muddati tugaydigan qarz eslatmasiz qolardi. Endi oyna
+    «hozirdan ertangi kun oxirigacha».
     """
     from app.config import settings
-    from app.models import Shop, Debt, Client, ShopStatus
-    from app.utils.helpers import format_money, local_day_bounds, esc, notify_debtor
+    from app.models import Debt
+    from app.utils import reminders
+    from app.utils.helpers import local_day_bounds, send_to_user
 
     if not settings.DUE_REMINDER_ENABLED:
         return
 
-    start, end = local_day_bounds(offset_days=1)      # ertangi kun
+    now = utcnow()
+    today_end = local_day_bounds()[1]
+    tomorrow_end = local_day_bounds(offset_days=1)[1]
+
     debts = await Debt.find(
-        In(Debt.status, ["open", "partial"]),
-        Debt.due_date >= start,
-        Debt.due_date <= end,
+        In(Debt.status, UNPAID_STATUSES),
+        Debt.due_date >= now,
+        Debt.due_date <= tomorrow_end,
         Debt.due_reminder_sent == False,              # noqa: E712
-    ).to_list()
+    ).limit(MAX_BATCH).to_list()
     if not debts:
         return
 
-    # Bitta mijozning bir do'kondagi barcha qarzlari — bitta xabarda
-    grouped: dict = {}
-    for d in debts:
-        grouped.setdefault((d.client_id, d.shop_id), []).append(d)
-
-    shops: dict = {}
+    clients, shops, users = await _reminder_context(debts)
     sent_ids: list = []
 
-    for (client_id, shop_id), items in grouped.items():
+    for (client_id, shop_id), items in _group_by_client_shop(debts).items():
         try:
-            if shop_id not in shops:
-                shops[shop_id] = await Shop.get(shop_id)
-            shop = shops[shop_id]
-            if not shop or shop.status != ShopStatus.ACTIVE:
+            shop = shops.get(shop_id)
+            client = clients.get(client_id)
+            if not shop or not client:
                 continue
 
-            client = await Client.get(client_id)
-            if not client or client.status != "active":
+            user = _recipient(client, users)
+            if not user:
+                # Qarzdor botga ulanmagan — keyinchalik SMS shu yerdan ketadi
                 continue
 
             total = sum(d.remaining for d in items)
-            if len(items) == 1:
-                body = f"💰 Qarz: <b>{format_money(total)}</b>"
-            else:
-                body = (
-                    f"💰 {len(items)} ta qarz, jami: <b>{format_money(total)}</b>\n"
-                    + "\n".join(f"  • {d.debt_number} — {format_money(d.remaining)}" for d in items[:5])
-                )
-
-            await notify_debtor(
-                client.phone,
-                f"⏰ <b>Ertaga qarz muddati tugaydi</b>\n\n"
-                f"🏪 {esc(shop.name)}\n{body}\n\n"
-                f"<i>Iltimos, to'lovni unutmang.</i>",
+            is_today = any(d.due_date and d.due_date <= today_end for d in items)
+            ok = await send_to_user(
+                user, reminders.due_soon_message(shop.name, items, total, today=is_today)
             )
-            sent_ids.extend(d.id for d in items)
+            if ok:
+                sent_ids.extend(d.id for d in items)
             await asyncio.sleep(settings.BULK_SEND_DELAY)
         except Exception as e:      # noqa: BLE001
             logger.error("Qarzdor eslatmasi (client=%s): %s", client_id, e)
@@ -247,7 +391,102 @@ async def send_due_reminders():
         await Debt.get_motor_collection().update_many(
             {"_id": {"$in": sent_ids}}, {"$set": {"due_reminder_sent": True}}
         )
-        logger.info("Qarzdorlarga %s ta eslatma yuborildi", len(sent_ids))
+        logger.info("Muddat eslatmasi: %s ta qarz bo'yicha yuborildi", len(sent_ids))
+
+
+# ─── Qarzdorga eslatma: muddat o'tdi (HAR KUNI) ───────────────────────────────
+
+async def send_overdue_reminders():
+    """Muddati o'tgan qarzlar uchun qarzdorga KUNLIK ogohlantirish.
+
+    Ilgari muddat o'tgach qarzdorga umuman xabar ketmasdi — faqat
+    do'kondor ko'rardi. Endi qarz to'lanmaguncha har kuni eslatma
+    boradi: qancha qarzi bor va muddat qachon tugagani.
+
+    Takrorlanmaslik kafolati: `overdue_notified_at` bugungi kun
+    boshidan oldin bo'lgan qarzlargina olinadi — server qayta ishga
+    tushsa ham bir kunda ikki marta yubormaydi.
+    """
+    from app.config import settings
+    from app.models import Debt
+    from app.utils import reminders
+    from app.utils.helpers import local_day_bounds, send_to_user
+
+    if not settings.OVERDUE_REMINDER_ENABLED:
+        return
+
+    # Holatlar yangi bo'lishi shart — soatlik vazifa bilan poyga bo'lmasin
+    await update_overdue()
+
+    now = utcnow()
+    today_start = local_day_bounds()[0]
+
+    query: dict = {
+        "status": "overdue",
+        "$or": [
+            {"overdue_notified_at": None},
+            {"overdue_notified_at": {"$lt": today_start}},
+        ],
+    }
+    # Umidsiz eski qarzlar bo'yicha yillab xabar yuborilmaydi —
+    # aks holda qarzdor botni bloklaydi va boshqa hech narsa yetib bormaydi
+    if settings.OVERDUE_REMINDER_MAX_DAYS > 0:
+        query["due_date"] = {
+            "$gte": now - timedelta(days=settings.OVERDUE_REMINDER_MAX_DAYS)
+        }
+
+    # ADOLAT: hali xabar ketmagan qarzlar (`overdue_notified_at` yo'q)
+    # birinchi keladi. Qarzlar soni bir kunlik chegaradan oshsa ham,
+    # doim bir xil qarzlar tashlab ketilmaydi — navbat aylanadi.
+    debts = await Debt.find(query).sort("overdue_notified_at").limit(MAX_BATCH).to_list()
+    if not debts:
+        return
+
+    clients, shops, users = await _reminder_context(debts)
+
+    # Muddati kelmagan / muddatsiz qarzlar ham xabarda ko'rsatiladi —
+    # qarzdor umumiy qoldig'ini bir qarashda ko'radi
+    others: dict = {}
+    if clients:
+        for d in await Debt.find(
+            In(Debt.client_id, list(clients)), In(Debt.status, UNPAID_STATUSES)
+        ).limit(MAX_BATCH).to_list():
+            others.setdefault((d.client_id, d.shop_id), []).append(d)
+
+    notified_ids: list = []
+    sent_count = 0
+
+    for (client_id, shop_id), items in _group_by_client_shop(debts).items():
+        try:
+            shop = shops.get(shop_id)
+            client = clients.get(client_id)
+            if not shop or not client:
+                continue
+
+            user = _recipient(client, users)
+            if not user:
+                continue
+
+            day = max((d.overdue_notice_count for d in items), default=0) + 1
+            ok = await send_to_user(user, reminders.overdue_message(
+                shop.name, items, others.get((client_id, shop_id), []), day=day,
+            ))
+            if ok:
+                notified_ids.extend(d.id for d in items)
+                sent_count += 1
+            await asyncio.sleep(settings.BULK_SEND_DELAY)
+        except Exception as e:      # noqa: BLE001
+            logger.error("Muddat o'tgan eslatmasi (client=%s): %s", client_id, e)
+
+    if notified_ids:
+        await Debt.get_motor_collection().update_many(
+            {"_id": {"$in": notified_ids}},
+            {"$set": {"overdue_notified_at": now}, "$inc": {"overdue_notice_count": 1}},
+        )
+    logger.info(
+        "Muddati o'tgan qarz eslatmasi: %s qarzdorga, %s ta qarz bo'yicha",
+        sent_count, len(notified_ids),
+    )
 
 
 # ─── Oylik Excel hisobot ──────────────────────────────────────────────────────
@@ -324,10 +563,19 @@ def setup_scheduler(hour: int = 9, minute: int = 0):
     job(update_overdue,              "overdue",  CronTrigger(minute=0, timezone=UZ_TZ), grace=600)
     job(archive_cleanup,             "cleanup",  CronTrigger(hour=0, minute=30, timezone=UZ_TZ))
 
+    # Obuna muddati tugagan do'konlarni to'xtatish (kuniga ikki marta —
+    # kechqurun tugagan obuna ertalabgacha ochiq qolib ketmasin)
+    job(expire_subscriptions,        "expire",   CronTrigger(hour="7,19", minute=5, timezone=UZ_TZ))
+
     # O'chirilgan do'konlarni muddat tugagach tozalash
     job(purge_deleted_shops,         "purge",    CronTrigger(hour=1, minute=0, timezone=UZ_TZ))
 
-    # Qarzdorlarga «ertaga muddat tugaydi»
+    # Qarzdorga «muddati o'tdi» — HAR KUNI, to'lanmaguncha
+    job(send_overdue_reminders,      "overdue_reminder",
+        CronTrigger(hour=settings.OVERDUE_REMINDER_HOUR,
+                    minute=settings.OVERDUE_REMINDER_MINUTE, timezone=UZ_TZ))
+
+    # Qarzdorga «bugun/ertaga muddat tugaydi»
     job(send_due_reminders,          "due_reminder",
         CronTrigger(hour=settings.DUE_REMINDER_HOUR, minute=30, timezone=UZ_TZ))
 
@@ -339,9 +587,10 @@ def setup_scheduler(hour: int = 9, minute: int = 0):
     if not scheduler.running:
         scheduler.start()
     logger.info(
-        "Scheduler ishga tushdi (kunlik %02d:%02d, qarzdor eslatmasi %02d:30, "
-        "oylik hisobot 1-sana %02d:00 — Toshkent)",
-        hour, minute, settings.DUE_REMINDER_HOUR, settings.MONTHLY_REPORT_HOUR,
+        "Scheduler ishga tushdi (do'kondor hisoboti %02d:%02d, muddat o'tgan eslatmasi %02d:%02d, "
+        "muddat eslatmasi %02d:30, oylik hisobot 1-sana %02d:00 — Toshkent)",
+        hour, minute, settings.OVERDUE_REMINDER_HOUR, settings.OVERDUE_REMINDER_MINUTE,
+        settings.DUE_REMINDER_HOUR, settings.MONTHLY_REPORT_HOUR,
     )
 
 

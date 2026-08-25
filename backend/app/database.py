@@ -118,6 +118,12 @@ async def _ensure_indexes():
     await _create(Shop.get_motor_collection(), [("status", ASCENDING), ("created_at", DESCENDING)], name="idx_shop_status_created")
     # O'chirilgan do'konlarni tozalash uchun
     await _create(Shop.get_motor_collection(), [("status", ASCENDING), ("deleted_at", ASCENDING)], name="idx_shop_deleted")
+    # Obuna muddati tekshiruvi (kuniga ikki marta, barcha faol do'konlar bo'yicha)
+    await _create(
+        Shop.get_motor_collection(),
+        [("status", ASCENDING), ("subscription_end", ASCENDING), ("trial_end", ASCENDING)],
+        name="idx_shop_subscription",
+    )
 
     # Bitta do'konda bitta raqam — faqat faol mijozlar uchun (partial unique)
     await _create(
@@ -141,7 +147,29 @@ async def _ensure_indexes():
     await _create(Debt.get_motor_collection(), [("status", ASCENDING), ("due_date", ASCENDING)], name="idx_debt_status_due")
     await _create(Debt.get_motor_collection(), [("shop_id", ASCENDING), ("created_at", DESCENDING)], name="idx_debt_shop_created")
 
-    await _create(Payment.get_motor_collection(), [("debt_id", ASCENDING)], name="idx_payment_debt")
+    # Kunlik eslatma so'rovi: status=overdue + bugun hali xabar ketmaganlar.
+    # Indekssiz bu butun `debts` kolleksiyasini skanerlardi.
+    await _create(
+        Debt.get_motor_collection(),
+        [("status", ASCENDING), ("overdue_notified_at", ASCENDING), ("due_date", ASCENDING)],
+        name="idx_debt_overdue_notify",
+    )
+    # «Bugun/ertaga muddat tugaydi» so'rovi
+    await _create(
+        Debt.get_motor_collection(),
+        [("due_reminder_sent", ASCENDING), ("status", ASCENDING), ("due_date", ASCENDING)],
+        name="idx_debt_due_reminder",
+    )
+    # Arxiv tozalash: status + updated_at
+    await _create(
+        Debt.get_motor_collection(),
+        [("status", ASCENDING), ("updated_at", ASCENDING)],
+        name="idx_debt_status_updated",
+    )
+
+    # Mijoz kartasida to'lovlar sana bo'yicha saralanadi — saralash
+    # xotirada emas, indeksda bajarilsin
+    await _create(Payment.get_motor_collection(), [("debt_id", ASCENDING), ("created_at", DESCENDING)], name="idx_payment_debt_created")
     await _create(Payment.get_motor_collection(), [("client_id", ASCENDING), ("created_at", DESCENDING)], name="idx_payment_client_created")
     await _create(Payment.get_motor_collection(), [("shop_id", ASCENDING)], name="idx_payment_shop")
 

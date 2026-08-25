@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from beanie import PydanticObjectId
 from beanie.operators import In
+from pymongo.errors import DuplicateKeyError
 
 from app.models import (
     User, Shop, Client, Debt, Payment, SupportMessage,
@@ -14,10 +15,12 @@ from app.models import (
 from app.core.tma import get_tma_user
 from app.core.ratelimit import write_rate_limit, user_write_rate_limit
 from app.core import audit, cache, locks
+from app.utils import reminders
 from app.utils.helpers import (
-    generate_debt_number, format_money, notify_debtor, debt_notification,
-    safe_regex, normalize_phone, is_valid_phone, esc, notify_telegram,
-    month_starts, month_label, parse_due_date,
+    generate_debt_number, format_money, debt_notification,
+    safe_regex, normalize_phone, is_valid_phone, esc,
+    month_starts, month_label, parse_due_date, debt_status_for,
+    subscription_expired, notify_debtor_bg, notify_telegram_bg,
 )
 
 router = APIRouter(prefix="/api/tma/owner")
@@ -37,18 +40,37 @@ def _oid(value: str, label: str = "Ma'lumot") -> PydanticObjectId:
 
 # ─── DEPENDENCY ───────────────────────────────────────────────────────────────
 
+# Do'kon egasi + do'kon juftligi shuncha soniya keshlanadi.
+# TEZLIK: har bir so'rov ilgari ikkita qo'shimcha so'rov qilardi
+# (User.find_one + Shop.get). Bitta ekran ochilishida 2-3 so'rov ketadi,
+# ya'ni sahifaga 4-6 ortiqcha borish edi.
+# MUVOZANAT: qisqa TTL — admin do'konni bloklasa yoki obuna tugasa,
+# cheklov eng ko'pi bilan shu soniyalar ichida kuchga kiradi.
+OWNER_CACHE_TTL = 5.0
+
+
+async def _load_owner_shop(telegram_id: int, shop_id: str):
+    user = await User.find_one(User.telegram_id == telegram_id)
+    shop = await Shop.get(_oid(shop_id, "Do'kon")) if user else None
+    return user, shop
+
+
 async def owner_shop(
     shop_id: str = Query(..., min_length=24, max_length=24),
     tma: dict = Depends(get_tma_user),
 ):
     """So'ralgan do'kon shu foydalanuvchiga tegishli ekanini tekshiradi."""
-    user = await User.find_one(User.telegram_id == tma["telegram_id"])
+    telegram_id = tma["telegram_id"]
+    user, shop = await cache.get_or_set(
+        f"owner-shop:{telegram_id}:{shop_id}",
+        OWNER_CACHE_TTL,
+        lambda: _load_owner_shop(telegram_id, shop_id),
+    )
+
     if not user:
         raise HTTPException(404, "Foydalanuvchi topilmadi")
     if user.is_blocked:
         raise HTTPException(403, "Akkauntingiz bloklangan")
-
-    shop = await Shop.get(_oid(shop_id, "Do'kon"))
     # Mavjud emas va "meniki emas" holatlari bir xil javob beradi —
     # boshqa do'konlar ID sini taxmin qilib bilib bo'lmaydi
     if not shop or shop.owner_id != user.id:
@@ -56,6 +78,14 @@ async def owner_shop(
 
     if shop.status not in (ShopStatus.ACTIVE, ShopStatus.PENDING):
         raise HTTPException(403, f"Do'kon holati: {shop.status}")
+
+    # XAVFSIZLIK/BIZNES: obuna (yoki trial) muddati tugagan do'kon ishlamaydi.
+    # Ilgari muddat tugashi hech qanday oqibatga olib kelmasdi — admin qo'lda
+    # bloklamaguncha tizimdan bepul foydalanish mumkin edi.
+    if subscription_expired(shop):
+        raise HTTPException(
+            403, "Obuna muddati tugagan. Davom ettirish uchun admin bilan bog'laning."
+        )
 
     return user, shop
 
@@ -115,16 +145,6 @@ async def monthly_debt_stats(match: dict, months: int = 6) -> list[dict]:
         }
         for s in starts
     ]
-
-
-async def _group(model, match: dict, field: str, agg: dict) -> dict:
-    if not match.get(field, {}).get("$in"):
-        return {}
-    rows = await model.get_motor_collection().aggregate([
-        {"$match": match},
-        {"$group": {"_id": f"${field}", **agg}},
-    ]).to_list(length=None)
-    return {r["_id"]: r for r in rows}
 
 
 # ─── DASHBOARD ────────────────────────────────────────────────────────────────
@@ -312,6 +332,13 @@ async def get_client(client_id: str, ctx=Depends(owner_shop)):
             {"amount": p.amount, "created_at": p.created_at.isoformat()} for p in payments
         ]
 
+    # «Eslatma yuborish» tugmasi uchun: oxirgi qo'lda eslatma qachon ketgan
+    last_reminder = max(
+        (d.manual_reminder_at for d in debts
+         if d.manual_reminder_at and d.status in ACTIVE_STATUSES),
+        default=None,
+    )
+
     return {
         "id": str(client.id),
         "full_name": client.full_name,
@@ -321,7 +348,14 @@ async def get_client(client_id: str, ctx=Depends(owner_shop)):
         "total_paid": total_paid,
         "debts": debt_list,
         "payments": payments_list,
+        "last_reminder_at": last_reminder.isoformat() if last_reminder else None,
+        "reminder_cooldown_hours": _reminder_cooldown_hours(),
     }
+
+
+def _reminder_cooldown_hours() -> int:
+    from app.config import settings
+    return settings.MANUAL_REMINDER_COOLDOWN_HOURS
 
 
 class CreateClientBody(BaseModel):
@@ -347,25 +381,34 @@ async def create_client(body: CreateClientBody, ctx=Depends(owner_shop)):
     if existing:
         raise HTTPException(400, f"Bu raqam allaqachon mavjud: {existing.full_name}")
 
-    client = await Client(
-        shop_id=shop.id,
-        full_name=body.full_name.strip(),
-        phone=phone,
-        debt_limit=body.debt_limit or None,
-    ).insert()
+    # Ikki qurilmadan bir vaqtda bir xil raqam kiritilsa, yuqoridagi
+    # tekshiruv ikkalasidan ham o'tib ketadi. Bazadagi unikal indeks
+    # ikkinchisini rad etadi — buni 500 emas, tushunarli xato qilamiz.
+    try:
+        client = await Client(
+            shop_id=shop.id,
+            full_name=body.full_name.strip(),
+            phone=phone,
+            debt_limit=body.debt_limit or None,
+        ).insert()
+    except DuplicateKeyError:
+        raise HTTPException(400, "Bu raqam allaqachon mavjud")
 
     debt_info = None
     if body.initial_amount and body.initial_amount > 0:
         due_date = parse_due_date(body.initial_due_date)
+        urgent, urgency_text = reminders.due_urgency(due_date)
         number = await generate_debt_number(shop.id)
         debt = await Debt(
             debt_number=number, shop_id=shop.id, client_id=client.id,
             amount=body.initial_amount, remaining=body.initial_amount,
             due_date=due_date, note=body.initial_note, status=DebtStatus.OPEN,
+            # Muddati bugun/ertaga bo'lsa ogohlantirish shu xabarda ketdi
+            due_reminder_sent=urgent,
         ).insert()
-        await notify_debtor(
+        notify_debtor_bg(
             client.phone,
-            debt_notification(shop.name, body.initial_amount, due_date, debt.note),
+            debt_notification(shop.name, body.initial_amount, due_date, debt.note) + urgency_text,
         )
         debt_info = {"id": str(debt.id), "debt_number": debt.debt_number}
         await audit.log_owner(
@@ -427,7 +470,7 @@ async def archive_client(client_id: str, ctx=Depends(owner_shop)):
     client.updated_at = now
     await client.save()
 
-    await notify_debtor(client.phone, f"📦 {esc(shop.name)}: Sizning qarz yozuvingiz o'chirildi.")
+    notify_debtor_bg(client.phone, f"📦 {esc(shop.name)}: Sizning qarz yozuvingiz o'chirildi.")
     await audit.log_owner(
         user, shop, "client.archive",
         entity_type="client", entity_id=client.id, entity_label=client.full_name,
@@ -464,7 +507,9 @@ async def clear_client_debts(client_id: str, ctx=Depends(owner_shop)):
                     amount=d.remaining, remaining_after=0,
                 ))
                 total_cleared += d.remaining
-            d.paid_amount = d.amount
+            # `d.amount` emas: super admin qarz summasini o'zgartirgan bo'lsa
+            # `amount != paid + remaining` bo'lib qolishi mumkin edi
+            d.paid_amount += d.remaining
             d.remaining = 0
             d.status = DebtStatus.CLOSED
             d.updated_at = now
@@ -475,7 +520,7 @@ async def clear_client_debts(client_id: str, ctx=Depends(owner_shop)):
         if payments:
             await Payment.insert_many(payments)
 
-    await notify_debtor(
+    notify_debtor_bg(
         client.phone,
         f"✅ {esc(shop.name)}: Barcha qarzlaringiz ({format_money(total_cleared)}) yopildi!",
     )
@@ -486,6 +531,68 @@ async def clear_client_debts(client_id: str, ctx=Depends(owner_shop)):
         meta={"count": len(active), "total": total_cleared},
     )
     return {"cleared_count": len(active), "total_cleared": total_cleared}
+
+
+@router.post("/clients/{client_id}/remind", dependencies=[Depends(write_rate_limit), Depends(user_write_rate_limit)])
+async def remind_client(client_id: str, ctx=Depends(owner_shop)):
+    """Qarzdorga qo'lda eslatma yuborish.
+
+    Avtomatik eslatmalar kuniga bir marta ketadi. Do'kondorga ba'zan
+    «hoziroq eslat» kerak bo'ladi — shu tugma uchun.
+
+    SPAMDAN HIMOYA: bitta mijozga MANUAL_REMINDER_COOLDOWN_HOURS soatda
+    bir marta. Aks holda tugmani ketma-ket bosib qarzdorni ko'mib
+    tashlash mumkin edi (va bot bloklanardi).
+    """
+    from app.config import settings
+    from app.utils.helpers import find_debtor_user, send_to_user
+
+    user, shop = ctx
+    client = await Client.get(_oid(client_id, "Mijoz"))
+    if not client or client.shop_id != shop.id or client.status != "active":
+        raise HTTPException(404, "Mijoz topilmadi")
+
+    debts = await Debt.find(
+        Debt.client_id == client.id, In(Debt.status, ACTIVE_STATUSES)
+    ).sort(+Debt.created_at).to_list()
+    if not debts:
+        raise HTTPException(400, "Bu mijozda faol qarz yo'q")
+
+    now = utcnow()
+    cooldown = timedelta(hours=settings.MANUAL_REMINDER_COOLDOWN_HOURS)
+    last = max((d.manual_reminder_at for d in debts if d.manual_reminder_at), default=None)
+    if last and now - last < cooldown:
+        left = cooldown - (now - last)
+        hours = int(left.total_seconds() // 3600)
+        mins = int(left.total_seconds() % 3600 // 60)
+        when = f"{hours} soat {mins} daqiqa" if hours else f"{mins} daqiqa"
+        raise HTTPException(429, f"Eslatma yaqinda yuborilgan. {when}dan keyin qayta urining.")
+
+    debtor = await find_debtor_user(client.phone)
+    if not debtor:
+        raise HTTPException(
+            400,
+            "Bu mijoz botga ulanmagan — unga xabar yuborib bo'lmaydi. "
+            "Mijoz botda /start bosib raqamini ulashishi kerak.",
+        )
+
+    total = sum(d.remaining for d in debts)
+    ok = await send_to_user(debtor, reminders.manual_message(shop.name, debts, total))
+    if not ok:
+        raise HTTPException(502, "Xabar yuborilmadi — mijoz botni bloklagan bo'lishi mumkin.")
+
+    await Debt.get_motor_collection().update_many(
+        {"_id": {"$in": [d.id for d in debts]}},
+        {"$set": {"manual_reminder_at": now}},
+    )
+    await audit.log_owner(
+        user, shop, "debt.remind",
+        entity_type="client", entity_id=client.id, entity_label=client.full_name,
+        summary=f"{client.full_name} ({client.phone}) — qo'lda eslatma yuborildi "
+                f"({len(debts)} qarz, {format_money(total)})",
+        meta={"debts": len(debts), "total": total},
+    )
+    return {"ok": True, "debts": len(debts), "total": total}
 
 
 # ─── DEBTS ───────────────────────────────────────────────────────────────────
@@ -517,16 +624,21 @@ async def create_debt(body: CreateDebtBody, ctx=Depends(owner_shop)):
             limit_warning = f"Limit {format_money(excess)} ga oshadi"
 
     due_date = parse_due_date(body.due_date)
+    urgent, urgency_text = reminders.due_urgency(due_date)
     number = await generate_debt_number(shop.id)
 
     debt = await Debt(
         debt_number=number, shop_id=shop.id, client_id=client.id,
         amount=body.amount, remaining=body.amount, due_date=due_date,
         note=body.note, status=DebtStatus.OPEN,
+        # Muddati bugun/ertaga bo'lgan qarz kunlik jadvalga ulgurmaydi —
+        # ogohlantirish shu xabarning o'zida ketadi
+        due_reminder_sent=urgent,
     ).insert()
 
-    await notify_debtor(
-        client.phone, debt_notification(shop.name, body.amount, due_date, debt.note)
+    notify_debtor_bg(
+        client.phone,
+        debt_notification(shop.name, body.amount, due_date, debt.note) + urgency_text,
     )
     await audit.log_owner(
         user, shop, "debt.create",
@@ -558,7 +670,11 @@ async def create_payment(body: CreatePaymentBody, ctx=Depends(owner_shop)):
     if actual <= 0:
         raise HTTPException(400, "Qarz qoldig'i yo'q")
     new_remaining = debt.remaining - actual
-    new_status = DebtStatus.CLOSED if new_remaining == 0 else DebtStatus.PARTIAL
+    new_paid = debt.paid_amount + actual
+    # XATO TUZATILDI: ilgari qisman to'lovdan keyin holat doim `partial`
+    # bo'lardi — muddati o'tgan qarz shu bilan «muddati o'tgan» ro'yxatidan
+    # va kunlik eslatmalardan chiqib ketardi (1 so'm to'lab qutulish yo'li).
+    new_status = DebtStatus(debt_status_for(new_remaining, new_paid, debt.due_date))
 
     # Atomar yangilash: ikki qurilmadan bir vaqtda to'lov kiritilsa ham
     # qoldiq manfiy bo'lib ketmaydi (ilgari read-modify-write edi).
@@ -566,7 +682,7 @@ async def create_payment(body: CreatePaymentBody, ctx=Depends(owner_shop)):
         {"_id": debt.id, "remaining": debt.remaining},
         {"$set": {
             "remaining": new_remaining,
-            "paid_amount": debt.paid_amount + actual,
+            "paid_amount": new_paid,
             "status": new_status.value,
             "updated_at": utcnow(),
         }},
@@ -586,7 +702,7 @@ async def create_payment(body: CreatePaymentBody, ctx=Depends(owner_shop)):
         else:
             msg = (f"💳 {esc(shop.name)}: {format_money(actual)} to'lov qabul qilindi. "
                    f"Qoldiq: {format_money(new_remaining)}")
-        await notify_debtor(client.phone, msg)
+        notify_debtor_bg(client.phone, msg)
 
     await audit.log_owner(
         user, shop, "payment.create",
@@ -648,7 +764,8 @@ async def _apply_total_payment_locked(client: Client, shop_name: str, amount: in
         expected[d.id] = d.remaining
         d.paid_amount += take
         d.remaining = new_rem
-        d.status = DebtStatus.CLOSED if new_rem == 0 else DebtStatus.PARTIAL
+        # Qisman to'lov muddati o'tgan qarzni «ochiq» qilib qo'ymaydi
+        d.status = DebtStatus(debt_status_for(new_rem, d.paid_amount, d.due_date))
         d.updated_at = now
         touched.append(d)
         leftover -= take
@@ -671,7 +788,7 @@ async def _apply_total_payment_locked(client: Client, shop_name: str, amount: in
     else:
         msg = (f"💳 <b>{esc(shop_name)}</b>: {format_money(amount)} to'lov qabul qilindi.\n"
                f"💰 Umumiy qoldiq: <b>{format_money(new_total)}</b>")
-    await notify_debtor(client.phone, msg)
+    notify_debtor_bg(client.phone, msg)
 
     return {"paid": amount, "total_remaining": new_total}
 
@@ -753,7 +870,7 @@ async def send_contact(body: ContactBody, ctx=Depends(owner_shop)):
 
     admin_tid = await cache.admin_telegram_id()
     if admin_tid:
-        await notify_telegram(
+        notify_telegram_bg(
             admin_tid,
             f"📩 <b>Yangi xabar</b>\n\n👤 {esc(user.full_name)}\n🏪 {esc(shop.name)}\n\n💬 {esc(text)}",
         )

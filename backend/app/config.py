@@ -75,6 +75,11 @@ class Settings(BaseSettings):
     LOGIN_LOCKOUT_SECONDS: int = 900
     API_RATE_LIMIT: int = 120            # umumiy: 120 so'rov / daqiqa / IP
     API_RATE_WINDOW: int = 60
+    # Ilova oldida nechta ISHONCHLI proksi turadi (Railway edge = 1).
+    # X-Forwarded-For oxiridan shuncha qadam sanaladi — mijoz o'zi yozgan
+    # soxta qiymat cheklovlarni chetlab o'tolmasin. Cloudflare + Railway
+    # bo'lsa 2 qilinadi.
+    TRUSTED_PROXY_HOPS: int = 1
 
     # ─── Scheduler ────────────────────────────────────────────────────────────
     TIMEZONE: str = "Asia/Tashkent"
@@ -94,9 +99,25 @@ class Settings(BaseSettings):
     # Har oyning 1-sanasida do'kondorlarga Excel hisobot yuborish
     MONTHLY_REPORT_ENABLED: bool = True
     MONTHLY_REPORT_HOUR: int = 10
-    # Qarzdorga "ertaga muddat tugaydi" eslatmasi
+    # Qarzdorga "ertaga/bugun muddat tugaydi" eslatmasi
     DUE_REMINDER_ENABLED: bool = True
     DUE_REMINDER_HOUR: int = 10
+    # Muddati o'tgan qarzlar uchun HAR KUNGI eslatma
+    OVERDUE_REMINDER_ENABLED: bool = True
+    OVERDUE_REMINDER_HOUR: int = 9
+    OVERDUE_REMINDER_MINUTE: int = 30
+    # Necha kundan keyin kunlik eslatma to'xtaydi (0 = cheksiz).
+    # Umidsiz qarz bo'yicha yillab xabar yuborish botni bloklashga olib keladi.
+    OVERDUE_REMINDER_MAX_DAYS: int = 60
+    # Do'kondor bitta mijozga qo'lda eslatmani necha soatda bir yubora oladi
+    MANUAL_REMINDER_COOLDOWN_HOURS: int = 6
+
+    # ─── Obuna nazorati ───────────────────────────────────────────────────────
+    # Muddati tugagan do'kon avtomatik to'xtatiladi.
+    # DIQQAT: o'chirilsa, trial tugagach ham tizimdan bepul foydalanish mumkin.
+    SUBSCRIPTION_ENFORCE: bool = True
+    # Muddat tugagach necha kun "imtiyoz" beriladi (0 = darhol to'xtaydi)
+    SUBSCRIPTION_GRACE_DAYS: int = 0
     # Do'kondor kuniga necha marta Excel hisobot ola oladi
     EXPORT_DAILY_LIMIT: int = 5
     # Bitta hisobotdagi maksimal qarzlar soni (xotira himoyasi)
@@ -263,6 +284,18 @@ class Settings(BaseSettings):
             issues.append(("INFO", "ALLOWED_HOSTS bo'sh — Host header filtri o'chiq"))
         if self.MIN_PASSWORD_LENGTH < 8:
             issues.append(("OGOH", f"MIN_PASSWORD_LENGTH juda kichik: {self.MIN_PASSWORD_LENGTH}"))
+        if self.TRUSTED_PROXY_HOPS < 1:
+            issues.append((
+                "XATAR",
+                "TRUSTED_PROXY_HOPS < 1 — mijoz yozgan X-Forwarded-For qabul qilinadi "
+                "va IP bo'yicha cheklovlarni chetlab o'tish mumkin",
+            ))
+        elif self.is_production and self.TRUSTED_PROXY_HOPS > 3:
+            issues.append((
+                "OGOH",
+                f"TRUSTED_PROXY_HOPS={self.TRUSTED_PROXY_HOPS} — juda katta; "
+                "haqiqiy mijoz IP si o'rniga proksi IP si ishlatilishi mumkin",
+            ))
         return issues
 
 

@@ -5,6 +5,7 @@ savollarga aniq javob berish. Yozuv muvaffaqiyatsiz bo'lsa ham asosiy
 amal to'xtamaydi — log hech qachon biznes oqimini buzmasligi kerak.
 """
 import logging
+import time
 from typing import Any, Optional
 
 from fastapi import Request
@@ -73,8 +74,34 @@ async def log(
     except Exception as e:      # noqa: BLE001
         logger.warning("Audit yozuvi saqlanmadi (%s): %s", action, e)
 
-    if action in NOTIFY_ACTIONS:
-        await _notify_super_admins(action, actor_type, actor_name, summary, ip)
+    if action in NOTIFY_ACTIONS and _notify_allowed(action):
+        # TEZLIK + HIMOYA: xabarnoma so'rov ichida kutilmaydi.
+        # Ilgari `auth.locked` ham shu yo'ldan o'tardi — parol tanlash
+        # hujumi har bir bloklanishda barcha super adminlarga ketma-ket
+        # Telegram so'rovi yuborib, login endpointini ushlab turardi.
+        from app.core import tasks
+        tasks.spawn(_notify_super_admins(action, actor_type, actor_name, summary, ip))
+
+
+# Bir xil turdagi xabarnoma shu soniyalarda bir martadan ko'p yuborilmaydi.
+# Ommaviy amal (masalan 50 ta qarzni ketma-ket o'chirish) yoki hujum
+# paytida super adminning telefoni jiringlab qolmasin.
+_NOTIFY_COOLDOWN = {
+    "auth.locked": 300.0,        # parol tanlash urinishi — 5 daqiqada 1 marta
+    "debt.delete": 60.0,
+}
+_last_notified: dict[str, float] = {}
+
+
+def _notify_allowed(action: str) -> bool:
+    cooldown = _NOTIFY_COOLDOWN.get(action)
+    if not cooldown:
+        return True
+    now = time.monotonic()
+    if now - _last_notified.get(action, 0.0) < cooldown:
+        return False
+    _last_notified[action] = now
+    return True
 
 
 async def _notify_super_admins(

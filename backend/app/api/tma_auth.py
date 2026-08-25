@@ -10,14 +10,34 @@ from app.models import (
 )
 from app.core.tma import verify_init_data, create_tma_token, get_tma_user, InitDataError
 from app.core.ratelimit import auth_rate_limit, write_rate_limit, user_write_rate_limit
-from app.core import cache
+from app.core import cache, audit
 from app.config import settings
-from app.utils.helpers import normalize_phone, is_valid_phone, esc, notify_telegram
+from app.utils.helpers import (
+    normalize_phone, is_valid_phone, esc, notify_telegram, phone_variants,
+)
 
 router = APIRouter(prefix="/api/tma")
 logger = logging.getLogger(__name__)
 
 MAX_EXTRA_PHONES = 2
+# Bitta foydalanuvchi ochishi mumkin bo'lgan do'konlar soni
+# (o'chirilganlar sanoqqa kirmaydi)
+MAX_SHOPS_PER_USER = 10
+
+# Bir kunda nechta raqam biriktirish/o'zgartirish mumkin.
+# DIQQAT: raqam hozircha tasdiqlanmaydi — begona raqamni yozib boshqa
+# odamning qarzlarini ko'rish nazariy jihatdan mumkin. Limit + audit
+# yozuvi buni sezilarli qiyinlashtiradi va izsiz qoldirmaydi.
+PHONE_CHANGES_PER_DAY = 5
+
+
+async def _phone_change_guard(user) -> None:
+    from app.core.ratelimit import limiter
+    from app.config import settings as cfg
+
+    if not cfg.RATE_LIMIT_ENABLED:
+        return
+    await limiter.check(f"phone-change:{user.telegram_id}", PHONE_CHANGES_PER_DAY, 86400)
 
 
 class AuthRequest(BaseModel):
@@ -108,8 +128,7 @@ def _user_phones(user: User) -> list[str]:
     Eski yozuvlar turli formatda saqlangan bo'lishi mumkin, shuning uchun
     ikkala variant ham qidiriladi.
     """
-    raw = [p for p in [user.phone, *user.extra_phones] if p]
-    return sorted({*raw, *(normalize_phone(p) for p in raw)})
+    return sorted({v for p in [user.phone, *user.extra_phones] for v in phone_variants(p)})
 
 
 # ─── Yangi do'kon yaratish ────────────────────────────────────────────────────
@@ -132,42 +151,52 @@ async def create_new_shop(body: NewShopBody, tma: dict = Depends(get_tma_user)):
     if not shop_name:
         raise HTTPException(400, "Do'kon nomi kiritilishi shart")
 
-    user_shops = await Shop.find(Shop.owner_id == user.id).to_list()
-    # Cheksiz do'kon ochib tizimni to'ldirishning oldini olamiz
-    if len(user_shops) >= 10:
+    # O'chirilgan do'konlar chegaraga ham, nom taqqoslashga ham kirmaydi:
+    # aks holda admin do'konni o'chirgach, egasi yangisini ocholmay qolardi
+    user_shops = await Shop.find(
+        Shop.owner_id == user.id, Shop.status != ShopStatus.DELETED
+    ).to_list()
+    if len(user_shops) >= MAX_SHOPS_PER_USER:
         raise HTTPException(400, "Do'konlar soni chegarasiga yetdingiz")
     if any(s.name.lower() == shop_name.lower() for s in user_shops):
         raise HTTPException(400, "Sizda shu nomli do'kon allaqachon bor")
 
-    extra_days = 0
     promo_id = None
     if body.promo_code.strip():
         code = body.promo_code.strip().upper()
         promo = await PromoCode.find_one(PromoCode.code == code, PromoCode.is_active == True)  # noqa: E712
         if promo and promo.expires_at > utcnow():
-            user_shop_ids = {s.id for s in user_shops}
-            if not any(u.shop_id in user_shop_ids for u in promo.uses):
-                extra_days = settings.PROMO_EXTRA_DAYS
-                promo_id = promo.id
+            promo_id = promo.id
 
     trial_start = utcnow()
-    trial_end = trial_start + timedelta(days=settings.TRIAL_DAYS + extra_days)
-
     shop = await Shop(
         name=shop_name,
         owner_id=user.id,
         status=ShopStatus.PENDING,
         trial_start=trial_start,
-        trial_end=trial_end,
-        promo_code_id=promo_id,
+        trial_end=trial_start + timedelta(days=settings.TRIAL_DAYS),
     ).insert()
 
+    # ── Promokodni band qilish ────────────────────────────────────────────
+    # XATO TUZATILDI (aylanma yo'l): ilgari «bu foydalanuvchi kodni
+    # ishlatganmi?» degan tekshiruv o'qish, keyin yozish edi. Ikkita
+    # so'rovni bir vaqtda yuborib (yoki tugmani ikki marta bosib) bitta
+    # promokoddan bir necha do'konga bonus olish mumkin edi.
+    # Endi tekshiruv va yozuv bitta atomar so'rovda: MongoDB bitta
+    # hujjatga bir vaqtda ikkita yozuvni o'tkazmaydi.
+    extra_days = 0
     if promo_id:
-        # Atomar qo'shish — bir vaqtda ikkita so'rov kelsa ham yozuv yo'qolmaydi
-        await PromoCode.get_motor_collection().update_one(
-            {"_id": promo_id},
-            {"$push": {"uses": PromoCodeUse(shop_id=shop.id).model_dump()}},
+        claimed = await PromoCode.get_motor_collection().update_one(
+            {"_id": promo_id, "uses.owner_id": {"$ne": user.id}},
+            {"$push": {"uses": PromoCodeUse(shop_id=shop.id, owner_id=user.id).model_dump()}},
         )
+        if claimed.modified_count == 1:
+            extra_days = settings.PROMO_EXTRA_DAYS
+            shop.trial_end = trial_start + timedelta(days=settings.TRIAL_DAYS + extra_days)
+            shop.promo_code_id = promo_id
+            await shop.save()
+        else:
+            promo_id = None      # allaqachon ishlatilgan — bonus yo'q
 
     admin_tid = await cache.admin_telegram_id()
     if admin_tid:
@@ -176,7 +205,7 @@ async def create_new_shop(body: NewShopBody, tma: dict = Depends(get_tma_user)):
             InlineKeyboardButton(text="✅ Tasdiqlash", callback_data=f"shop_ok:{shop.id}"),
             InlineKeyboardButton(text="❌ Rad etish", callback_data=f"shop_no:{shop.id}"),
         ]])
-        await notify_telegram(
+        notify_telegram_bg(
             admin_tid,
             f"🆕 <b>Yangi do'kon so'rovi</b>\n\n"
             f"🏪 {esc(shop.name)}\n"
@@ -226,25 +255,41 @@ async def add_phone(body: PhoneBody, tma: dict = Depends(get_tma_user)):
     if taken:
         raise HTTPException(400, "Bu raqam boshqa akkauntga biriktirilgan")
 
+    await _phone_change_guard(user)
+
     user.extra_phones.append(phone)
     user.updated_at = utcnow()
     await user.save()
+    await audit.log(
+        "profile.phone_add", actor_type="owner", actor_name=user.full_name,
+        actor_id=user.telegram_id, entity_type="user", entity_id=user.id,
+        entity_label=user.full_name,
+        summary=f"{user.full_name} ({user.phone}) qo'shimcha raqam biriktirdi: {phone}",
+        meta={"phone": phone},
+    )
     return {"ok": True, "extra_phones": user.extra_phones}
 
 
-@router.delete("/profile/phones/{index}")
+@router.delete("/profile/phones/{index}", dependencies=[Depends(write_rate_limit), Depends(user_write_rate_limit)])
 async def remove_phone(index: int, tma: dict = Depends(get_tma_user)):
     user = await _me(tma)
     if index < 0 or index >= len(user.extra_phones):
         raise HTTPException(400, "Noto'g'ri indeks")
 
-    user.extra_phones.pop(index)
+    removed = user.extra_phones.pop(index)
     user.updated_at = utcnow()
     await user.save()
+    await audit.log(
+        "profile.phone_remove", actor_type="owner", actor_name=user.full_name,
+        actor_id=user.telegram_id, entity_type="user", entity_id=user.id,
+        entity_label=user.full_name,
+        summary=f"{user.full_name} raqamni olib tashladi: {removed}",
+        meta={"phone": removed},
+    )
     return {"ok": True, "extra_phones": user.extra_phones}
 
 
-@router.put("/profile/phones/{index}")
+@router.put("/profile/phones/{index}", dependencies=[Depends(write_rate_limit), Depends(user_write_rate_limit)])
 async def update_phone(index: int, body: PhoneBody, tma: dict = Depends(get_tma_user)):
     user = await _me(tma)
     if index < 0 or index >= len(user.extra_phones):
@@ -268,7 +313,17 @@ async def update_phone(index: int, body: PhoneBody, tma: dict = Depends(get_tma_
     if taken:
         raise HTTPException(400, "Bu raqam boshqa akkauntga biriktirilgan")
 
+    await _phone_change_guard(user)
+
+    old_phone = user.extra_phones[index]
     user.extra_phones[index] = phone
     user.updated_at = utcnow()
     await user.save()
+    await audit.log(
+        "profile.phone_update", actor_type="owner", actor_name=user.full_name,
+        actor_id=user.telegram_id, entity_type="user", entity_id=user.id,
+        entity_label=user.full_name,
+        summary=f"{user.full_name} raqamni o'zgartirdi: {old_phone} -> {phone}",
+        meta={"from": old_phone, "to": phone},
+    )
     return {"ok": True, "extra_phones": user.extra_phones}

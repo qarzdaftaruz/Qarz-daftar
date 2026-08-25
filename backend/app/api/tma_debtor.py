@@ -6,12 +6,18 @@ from beanie.operators import In
 
 from app.models import User, Shop, Client, Debt, Payment, ShopStatus, utcnow
 from app.core.tma import get_tma_user
-from app.utils.helpers import normalize_phone, month_starts, month_label
+from app.utils.helpers import phone_variants, month_starts, month_label
 
 router = APIRouter(prefix="/api/tma/debtor")
 logger = logging.getLogger(__name__)
 
 ACTIVE_STATUSES = ["open", "partial", "overdue"]
+
+# Bitta ekranda ko'rsatiladigan maksimal yozuvlar.
+# Ilgari cheklov yo'q edi: yillar davomida yig'ilgan mingta to'lovi bor
+# qarzdorda sahifa sekin ochilardi va javob hajmi bir necha MB bo'lardi.
+MAX_DEBTS = 300
+MAX_PAYMENTS = 500
 
 
 async def get_debtor_user(tma: dict = Depends(get_tma_user)) -> User:
@@ -25,8 +31,7 @@ async def get_debtor_user(tma: dict = Depends(get_tma_user)) -> User:
 
 def _get_phones(user: User) -> list[str]:
     """Barcha raqamlar — xom va normallashtirilgan ko'rinishda."""
-    raw = [p for p in [user.phone, *user.extra_phones] if p]
-    return sorted({*raw, *(normalize_phone(p) for p in raw)})
+    return sorted({v for p in [user.phone, *user.extra_phones] for v in phone_variants(p)})
 
 
 @router.get("/overview")
@@ -34,7 +39,7 @@ async def debtor_overview(user: User = Depends(get_debtor_user)):
     """Barcha do'konlardagi qarzlar umumiy ko'rinishi."""
     phones = _get_phones(user)
     if not phones:
-        return {"shops": [], "total_remaining": 0, "total_paid": 0}
+        return {"shops": [], "total_remaining": 0, "total_paid": 0, "total_overdue": 0}
 
     owned_ids = {s.id for s in await Shop.find(Shop.owner_id == user.id).to_list()}
 
@@ -42,7 +47,7 @@ async def debtor_overview(user: User = Depends(get_debtor_user)):
     # O'z do'konidagi yozuvni qarzdorlik sifatida ko'rsatmaymiz
     clients = [c for c in clients if c.shop_id not in owned_ids]
     if not clients:
-        return {"shops": [], "total_remaining": 0, "total_paid": 0}
+        return {"shops": [], "total_remaining": 0, "total_paid": 0, "total_overdue": 0}
 
     # O'chirilgan do'konlar ro'yxatga tushmaydi
     shops = {
@@ -53,7 +58,7 @@ async def debtor_overview(user: User = Depends(get_debtor_user)):
     }
     clients = [c for c in clients if c.shop_id in shops]
     if not clients:
-        return {"shops": [], "total_remaining": 0, "total_paid": 0}
+        return {"shops": [], "total_remaining": 0, "total_paid": 0, "total_overdue": 0}
 
     client_ids = [c.id for c in clients]
 
@@ -70,6 +75,9 @@ async def debtor_overview(user: User = Depends(get_debtor_user)):
             ]}},
             "active_count": {"$sum": {"$cond": [{"$in": ["$status", ACTIVE_STATUSES]}, 1, 0]}},
             "overdue": {"$sum": {"$cond": [{"$eq": ["$status", "overdue"]}, 1, 0]}},
+            "overdue_remaining": {"$sum": {"$cond": [
+                {"$eq": ["$status", "overdue"]}, "$remaining", 0,
+            ]}},
         }},
     ]).to_list(length=None)
     stats = {r["_id"]: r for r in rows}
@@ -77,6 +85,7 @@ async def debtor_overview(user: User = Depends(get_debtor_user)):
     shops_data = []
     total_remaining = 0
     total_paid = 0
+    total_overdue = 0
 
     for client in clients:
         shop = shops.get(client.shop_id)
@@ -85,8 +94,10 @@ async def debtor_overview(user: User = Depends(get_debtor_user)):
         st = stats.get(client.id, {})
         remaining = st.get("remaining", 0)
         paid = st.get("paid", 0)
+        overdue_remaining = st.get("overdue_remaining", 0)
         total_remaining += remaining
         total_paid += paid
+        total_overdue += overdue_remaining
         shops_data.append({
             "shop_id": str(shop.id),
             "client_id": str(client.id),
@@ -95,13 +106,17 @@ async def debtor_overview(user: User = Depends(get_debtor_user)):
             "paid": paid,
             "active_count": st.get("active_count", 0),
             "has_overdue": bool(st.get("overdue", 0)),
+            "overdue_count": st.get("overdue", 0),
+            "overdue_remaining": overdue_remaining,
         })
 
-    shops_data.sort(key=lambda x: -x["remaining"])
+    # Muddati o'tganlar birinchi — qarzdor eng shoshilinchini darhol ko'radi
+    shops_data.sort(key=lambda x: (not x["has_overdue"], -x["remaining"]))
     return {
         "shops": shops_data,
         "total_remaining": total_remaining,
         "total_paid": total_paid,
+        "total_overdue": total_overdue,
     }
 
 
@@ -131,12 +146,12 @@ async def debtor_shop_detail(shop_id: str, user: User = Depends(get_debtor_user)
     if not shop or shop.owner_id == user.id or shop.status == ShopStatus.DELETED:
         raise HTTPException(404, "Ma'lumot topilmadi")
 
-    debts = await Debt.find(Debt.client_id == client.id).sort(-Debt.created_at).to_list()
+    debts = await Debt.find(Debt.client_id == client.id)         .sort(-Debt.created_at).limit(MAX_DEBTS).to_list()
     debt_ids = [d.id for d in debts]
 
     payments_by_debt: dict = {}
     if debt_ids:
-        payments = await Payment.find(In(Payment.debt_id, debt_ids)).sort(-Payment.created_at).to_list()
+        payments = await Payment.find(In(Payment.debt_id, debt_ids))             .sort(-Payment.created_at).limit(MAX_PAYMENTS).to_list()
         for p in payments:
             payments_by_debt.setdefault(p.debt_id, []).append({
                 "amount": p.amount,

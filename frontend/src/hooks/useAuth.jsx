@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, useMemo } from 'react'
+import { createContext, useContext, useState, useEffect, useMemo, useRef } from 'react'
 import { tma } from '../lib/tma'
 import { authApi } from '../lib/api'
 
@@ -16,6 +16,11 @@ export function AuthProvider({ children }) {
 
   const [currentShopId, setCurrentShopId] = useState(null)
   const [view, setView] = useState('owner') // 'owner' | 'debtor'
+  // Boshlang'ich ko'rinish faqat BIR MARTA tanlanadi. Ilgari har bir
+  // `refresh()` da qayta hisoblanardi: qarzdor ko'rinishiga o'tgan
+  // do'kondor har qanday yangilanishdan keyin do'kon ko'rinishiga
+  // qaytib ketardi.
+  const viewChosen = useRef(false)
 
   useEffect(() => { init() }, [])
 
@@ -27,6 +32,8 @@ export function AuthProvider({ children }) {
       const { token, has_account, is_debtor, user, shops } = res.data
 
       if (token) sessionStorage.setItem('tma_token', token)
+      // Hisob yo'q bo'lsa eski token qolib ketmasin
+      else sessionStorage.removeItem('tma_token')
 
       const active = (shops || []).filter(s => s.status === 'active')
 
@@ -40,7 +47,10 @@ export function AuthProvider({ children }) {
       })
 
       setCurrentShopId(prev => prev && active.some(s => s.id === prev) ? prev : (active[0]?.id || null))
-      setView(active.length > 0 ? 'owner' : 'debtor')
+      if (!viewChosen.current) {
+        viewChosen.current = true
+        setView(active.length > 0 ? 'owner' : 'debtor')
+      }
     } catch (e) {
       setState(s => ({ ...s, loading: false, error: true }))
     }

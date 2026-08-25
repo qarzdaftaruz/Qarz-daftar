@@ -67,6 +67,25 @@ export default function DebtorOverview() {
       {loading ? <Skeleton /> : (
         <div style={{ padding: '16px 16px 0', display: 'flex', flexDirection: 'column', gap: 12 }}>
 
+          {/* Muddati o'tgan qarz — eng muhim ma'lumot, eng yuqorida */}
+          {data?.total_overdue > 0 && (
+            <div className="animate-rise" style={{
+              display: 'flex', alignItems: 'flex-start', gap: 11,
+              padding: '13px 15px', borderRadius: 18,
+              background: '#fef2f2', border: '1px solid #fecaca',
+            }}>
+              <AlertCircle size={19} style={{ color: '#dc2626', flexShrink: 0, marginTop: 1 }} />
+              <div style={{ minWidth: 0 }}>
+                <p style={{ fontWeight: 800, fontSize: 14, color: '#b91c1c', margin: 0 }}>
+                  Muddati o'tgan qarz bor
+                </p>
+                <p className="money" style={{ fontSize: 13, color: '#b91c1c', margin: '3px 0 0', lineHeight: 1.45 }}>
+                  {fmt.money(data.total_overdue)} — to'lash muddati tugagan.
+                </p>
+              </div>
+            </div>
+          )}
+
           {/* Hero totals — yashil (ishonch / xolis tajriba) */}
           <div className="card-hero-trust animate-rise">
             <p style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.09em', opacity: 0.85, marginBottom: 8, position: 'relative' }}>

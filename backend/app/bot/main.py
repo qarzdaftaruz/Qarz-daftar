@@ -99,6 +99,59 @@ async def cmd_start(message: Message, state: FSMContext):
 
 # ─── Kontakt ulashilganda ─────────────────────────────────────────────────────
 
+async def _claim_phone(user, phone: str) -> None:
+    """Telegram tasdiqlagan raqamni boshqa akkauntlardan tortib oladi.
+
+    XAVFSIZLIK TESHIGI: profil orqali istalgan raqamni «qo'shimcha raqam»
+    sifatida qo'shish mumkin — u tasdiqlanmaydi. Ya'ni begona odamning
+    raqamini kiritib, uning qarzlarini ko'rish yo'li bor edi (agar o'sha
+    odam hali botga ulanmagan bo'lsa).
+
+    Bu yerda raqamning HAQIQIY egasi aniqlanadi: Telegram kontaktni
+    o'zi tasdiqlaydi va biz uni faqat yuboruvchining o'z raqami ekaniga
+    ishonch hosil qilganimizdan keyin qabul qilamiz. Shu sababli
+    tasdiqlangan raqam boshqa akkauntlarning `extra_phones` ro'yxatidan
+    olib tashlanadi — egasi ustun.
+
+    To'liq yechim SMS tasdiqlash bo'ladi; unga qadar shu himoya ishlaydi.
+    """
+    from app.models import User
+    from app.core import audit
+    from app.utils.helpers import phone_variants
+
+    variants = phone_variants(phone)
+    try:
+        others = await User.find({
+            "_id": {"$ne": user.id},
+            "extra_phones": {"$in": variants},
+        }).to_list()
+        if not others:
+            return
+
+        await User.get_motor_collection().update_many(
+            {"_id": {"$in": [o.id for o in others]}},
+            {"$pull": {"extra_phones": {"$in": variants}}},
+        )
+        for other in others:
+            logger.warning(
+                "Raqam %s tasdiqlangan egasiga qaytarildi (eski: telegram_id=%s)",
+                phone, other.telegram_id,
+            )
+            await audit.log(
+                "profile.phone_reclaimed",
+                actor_type="system", actor_name="Tizim",
+                entity_type="user", entity_id=other.id, entity_label=other.full_name,
+                summary=(
+                    f"«{other.full_name}» akkauntidagi tasdiqlanmagan {phone} raqami "
+                    f"olib tashlandi — raqam egasi «{user.full_name}» botda tasdiqladi"
+                ),
+                meta={"phone": phone, "previous_telegram_id": other.telegram_id},
+            )
+    except Exception as e:      # noqa: BLE001
+        # Bu himoya ishlamasa ham ro'yxatdan o'tish to'xtamasligi kerak
+        logger.warning("Raqamni qaytarishda xato (%s): %s", phone, e)
+
+
 @router.message(F.contact)
 async def handle_contact(message: Message):
     from app.models import User, utcnow
@@ -125,6 +178,8 @@ async def handle_contact(message: Message):
         user.full_name = full_name
         user.updated_at = utcnow()
         await user.save()
+
+    await _claim_phone(user, phone)
 
     await message.answer("✅ Raqam qabul qilindi!", reply_markup=ReplyKeyboardRemove())
     await show_main_menu(message, user)
@@ -330,8 +385,12 @@ async def cb_shop_approve(callback: CallbackQuery):
     if not shop:
         return
 
+    from app.utils.helpers import restart_trial_if_expired
+
     shop.status = ShopStatus.ACTIVE
     shop.reject_reason = None
+    # Tasdiqlash kechikkan bo'lsa sinov muddati noldan boshlanadi
+    restart_trial_if_expired(shop)
     shop.updated_at = utcnow()
     await shop.save()
 
