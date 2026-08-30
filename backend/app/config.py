@@ -1,4 +1,6 @@
 import os
+import hmac
+import hashlib
 import secrets
 import logging
 from typing import Optional, List
@@ -157,11 +159,7 @@ class Settings(BaseSettings):
         if not self.WEBHOOK_PATH.startswith("/"):
             self.WEBHOOK_PATH = "/" + self.WEBHOOK_PATH
 
-        # 4) Webhook secret — bo'lmasa generatsiya
-        if not self.TELEGRAM_WEBHOOK_SECRET:
-            self.TELEGRAM_WEBHOOK_SECRET = secrets.token_urlsafe(32)
-
-        # 5) SECRET_KEY
+        # 4) SECRET_KEY
         if not self.SECRET_KEY:
             if self.is_production:
                 raise RuntimeError(
@@ -173,12 +171,28 @@ class Settings(BaseSettings):
         elif self.is_production and (len(self.SECRET_KEY) < 32 or self.SECRET_KEY in _WEAK_SECRETS):
             raise RuntimeError("SECRET_KEY juda qisqa yoki namunaviy. Kamida 32 belgili tasodifiy kalit kerak.")
 
-        # 6) Production'da dev-mode QAT'IY o'chiq
+        # 4b) Webhook secret — SECRET_KEY dan hosil qilinadi.
+        #
+        # XATO TUZATILDI: ilgari bu yerda `secrets.token_urlsafe(32)` bilan
+        # HAR BIR ISHGA TUSHISHDA yangi tasodifiy qiymat yasalardi. Odatda
+        # bu sezilmaydi, chunki startda `set_webhook` o'sha yangi qiymat
+        # bilan chaqiriladi. Lekin `set_webhook` bir marta muvaffaqiyatsiz
+        # bo'lsa (Telegram javob bermadi, tarmoq uzildi), Telegram'da ESKI
+        # secret qolib ketadi va shu daqiqadan boshlab har bir update
+        # 403 oladi — bot butunlay jim bo'lib qoladi va loglarda faqat
+        # "noto'g'ri secret token" ko'rinadi. Endi qiymat SECRET_KEY dan
+        # hosil qilinadi: qayta ishga tushirishdan keyin ham o'zgarmaydi.
+        if not self.TELEGRAM_WEBHOOK_SECRET:
+            self.TELEGRAM_WEBHOOK_SECRET = hmac.new(
+                self.SECRET_KEY.encode(), b"telegram-webhook-secret", hashlib.sha256
+            ).hexdigest()
+
+        # 5) Production'da dev-mode QAT'IY o'chiq
         if self.is_production and self.TMA_DEV_MODE:
             logger.error("TMA_DEV_MODE production'da yoqilgan edi — majburan o'chirildi.")
             self.TMA_DEV_MODE = False
 
-        # 7) Production'da bo'sh/oddiy parollar taqiqlanadi
+        # 6) Production'da bo'sh/oddiy parollar taqiqlanadi
         if self.is_production:
             for name, value in (
                 ("ADMIN_PASSWORD", self.ADMIN_PASSWORD),
@@ -280,6 +294,15 @@ class Settings(BaseSettings):
             issues.append(("XATAR", "CORS_ORIGINS ichida '*' bor"))
         if self.is_production and not self.WEBHOOK_URL:
             issues.append(("OGOH", "WEBHOOK_URL yo'q — bot polling rejimida (bir replika bo'lishi shart)"))
+        # Botdagi «Ilovani ochish» tugmasi shu manzilga ketadi. Namunaviy
+        # qiymat qolib ketsa bot tashqaridan "ishlamayotgan" bo'lib ko'rinadi:
+        # tugma bosiladi, lekin ochilmaydi.
+        if "your-mini-app" in self.MINI_APP_URL or not self.MINI_APP_URL.startswith("https://"):
+            issues.append((
+                "XATAR",
+                f"MINI_APP_URL noto'g'ri ({self.MINI_APP_URL}) — botdagi "
+                "«Ilovani ochish» tugmasi ochilmaydi",
+            ))
         if self.is_production and not self.ALLOWED_HOSTS:
             issues.append(("INFO", "ALLOWED_HOSTS bo'sh — Host header filtri o'chiq"))
         if self.MIN_PASSWORD_LENGTH < 8:

@@ -238,8 +238,23 @@ async def auth_rate_limit(request: Request) -> None:
 
 
 async def write_rate_limit(request: Request) -> None:
-    """Yozuv amallari (qarz/to'lov/xabar) uchun IP bo'yicha yumshoq limit."""
-    await rate_limit(request, scope="write", limit=60, window=60)
+    """Yozuv amallari uchun IP bo'yicha QO'POL DoS to'sig'i.
+
+    XATO TUZATILDI: limit 60/daqiqa edi va bu O'zbekiston mobil
+    operatorlarida haqiqiy muammo tug'dirardi. Ular CGNAT ishlatadi —
+    yuzlab abonent bitta ommaviy IP orqali chiqadi. Ya'ni 20 ta do'kondor
+    daqiqasiga 3 tadan qarz kiritsa, limit tugab, aybsiz foydalanuvchilar
+    «Juda ko'p so'rov» xatosini olardi. (Loglarda bitta sessiyaning
+    so'rovlari 37.110.211.138 va .146 dan kelgani ham shuni tasdiqlaydi:
+    mobil IP sessiya davomida ham o'zgarib turadi.)
+
+    Haqiqiy nazorat `user_write_rate_limit` da — u Telegram ID bo'yicha
+    ishlaydi va HAR BIR yozuv endpointiga shu bilan birga qo'yilgan
+    (tekshirilgan). Shuning uchun bu yerdagi IP limiti faqat qo'pol
+    to'siq bo'lib qoladi: bitta manbadan kelayotgan ochiq suiiste'molni
+    to'xtatadi, lekin oddiy foydalanuvchilarga tegmaydi.
+    """
+    await rate_limit(request, scope="write", limit=300, window=60)
 
 
 async def user_write_rate_limit(tma: dict = Depends(get_tma_user)) -> None:

@@ -1,10 +1,17 @@
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
-import { Clock, RefreshCw, XCircle, Plus } from 'lucide-react'
+import { Clock, RefreshCw, XCircle, Plus, Ban } from 'lucide-react'
 
 export default function ShopStatusScreen() {
   const navigate = useNavigate()
-  const { pendingShops, rejectedShops, refresh } = useAuth()
+  const { pendingShops, rejectedShops, blockedShops, refresh } = useAuth()
+
+  // XATO TUZATILDI: bloklangan do'konlar bu ekranda UMUMAN ko'rsatilmasdi.
+  // Obuna muddati tugab avtomatik to'xtatilgan do'kon egasi ilovani ochsa
+  // «Hozircha faol do'koningiz yo'q» va «Odatda 1-24 soat ichida
+  // tasdiqlanadi» degan mutlaqo noto'g'ri xabarni ko'rardi — sababni
+  // bilmasdi va yechim o'rniga «Yangi do'kon ochish» tugmasini bosib
+  // dublikat do'kon yaratardi.
 
   return (
     <div
@@ -37,8 +44,26 @@ export default function ShopStatusScreen() {
       </p>
 
       {/* Status cards */}
-      {(pendingShops.length > 0 || rejectedShops.length > 0) && (
+      {(pendingShops.length > 0 || rejectedShops.length > 0 || blockedShops.length > 0) && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 28 }}>
+          {blockedShops.map(s => (
+            <div key={s.id} style={{
+              borderRadius: 16, padding: '14px 16px',
+              background: '#fff7ed',
+              border: '1px solid #fed7aa',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+                <Ban size={15} style={{ color: '#ea580c', flexShrink: 0 }} />
+                <p style={{ fontWeight: 700, fontSize: 14, color: '#9a3412', margin: 0 }}>{s.name}</p>
+              </div>
+              <p style={{ fontSize: 12, color: '#c2410c', margin: '0 0 0 25px', lineHeight: 1.5 }}>
+                {s.block_reason || "Vaqtincha to'xtatilgan"}
+                <br />
+                Ma'lumotlaringiz saqlanib turibdi — davom ettirish uchun admin bilan bog'laning.
+              </p>
+            </div>
+          ))}
+
           {pendingShops.map(s => (
             <div key={s.id} style={{
               borderRadius: 16, padding: '14px 16px',
@@ -82,9 +107,13 @@ export default function ShopStatusScreen() {
         </button>
       </div>
 
-      <p style={{ fontSize: 12, textAlign: 'center', color: 'var(--tg-theme-hint-color)', marginTop: 20 }}>
-        Odatda 1–24 soat ichida tasdiqlanadi
-      </p>
+      {/* Bu matn faqat tasdiqlash kutayotgan do'kon bo'lgandagina to'g'ri.
+          Ilgari bloklangan/rad etilgan do'konda ham chiqib, adashtirardi. */}
+      {pendingShops.length > 0 && (
+        <p style={{ fontSize: 12, textAlign: 'center', color: 'var(--tg-theme-hint-color)', marginTop: 20 }}>
+          Odatda 1–24 soat ichida tasdiqlanadi
+        </p>
+      )}
     </div>
   )
 }

@@ -237,6 +237,19 @@ export const adminAuditApi = {
 }
 
 /**
+ * Do'kondor xabarlari (mini app «Bog'lanish» va botdagi /contact).
+ *
+ * Backend bu endpointlarni ancha oldin bergan, lekin panelda ularni
+ * o'qiydigan sahifa yo'q edi — xabarlar faqat AppSettings.admin_telegram_id
+ * ga Telegram orqali ketardi. O'sha ID bo'sh bo'lsa yoki xabar o'tib
+ * ketsa, murojaat butunlay yo'qolardi: bazada yotardi, hech kim ko'rmasdi.
+ */
+export const adminSupportApi = {
+  list:     (params) => adminHttp.get('/support', { params }),
+  markRead: (id)     => adminHttp.post(`/support/${id}/read`),
+}
+
+/**
  * Excel faylni brauzerda yuklab olish.
  * Token Authorization header'da bo'lgani uchun oddiy <a href> ishlamaydi —
  * faylni blob sifatida olamiz va vaqtincha havola yasaymiz.

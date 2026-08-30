@@ -9,6 +9,7 @@ import { tma } from '../../lib/tma'
 import { useTimedState } from '../../hooks/useTimedState'
 import { fmt } from '../../lib/utils'
 import Money from '../../components/ui/Money'
+import LoadError from '../../components/ui/LoadError'
 
 function Skeleton() {
   return (
@@ -37,15 +38,18 @@ const Row = ({ label, val, color }) => (
 export default function Stats() {
   const [data, setData]       = useState(null)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
   const { currentShopId }     = useAuth()
 
   useEffect(() => { if (currentShopId) load() }, [currentShopId])
 
   const load = async () => {
-    setLoading(true)
+    setLoading(true); setLoadError('')
     try {
       const res = await ownerApi.stats(currentShopId)
       setData(res.data)
+    } catch (e) {
+      setLoadError(errorMessage(e, 'Statistika yuklanmadi'))
     } finally { setLoading(false) }
   }
 
@@ -86,7 +90,9 @@ export default function Stats() {
         </h1>
       </div>
 
-      {loading ? <Skeleton /> : (
+      {loading ? <Skeleton /> : loadError && !data ? (
+        <LoadError message={loadError} onRetry={load} />
+      ) : (
         <div style={{ padding: '16px 16px 0', display: 'flex', flexDirection: 'column', gap: 12 }}>
 
           {/* Hero — gradient */}

@@ -149,16 +149,45 @@ class BodySizeLimitMiddleware:
         await self.app(scope, guarded_receive, guarded_send)
 
 
+# Limit ishga tushgani haqidagi log shu soniyada bir martadan ko'p
+# yozilmaydi — hujum paytida loglar to'lib ketmasin.
+_LOG_EVERY = 30.0
+_last_throttle_log = 0.0
+
+
+def _log_throttle(path: str, ip: str) -> None:
+    global _last_throttle_log
+    import time
+
+    now = time.monotonic()
+    if now - _last_throttle_log < _LOG_EVERY:
+        return
+    _last_throttle_log = now
+    logger.warning(
+        "[limit] umumiy so'rov limiti ishga tushdi: ip=%s yo'l=%s "
+        "(API_RATE_LIMIT=%s / %ss). Mobil operator NAT'i bo'lsa bu "
+        "aybsiz foydalanuvchilarga ham tegishi mumkin.",
+        ip, path, settings.API_RATE_LIMIT, settings.API_RATE_WINDOW,
+    )
+
+
 class GlobalRateLimitMiddleware:
     """IP bo'yicha umumiy so'rovlar limiti (DoS/skanerlashga qarshi)."""
 
-    _SKIP = {"/health", "/healthz", "/"}
-
     def __init__(self, app: ASGIApp):
         self.app = app
+        # XATO TUZATILDI: Telegram webhook'i ham shu limitga tushardi.
+        # Telegram BARCHA update'larni bir nechta o'z serveridan yuboradi,
+        # ya'ni butun bot trafigi bitta-ikkita IP ga to'planadi. Faol
+        # paytda daqiqasiga 120 tadan oshsa, Telegram 429 oladi va
+        # xabarlarni kechiktirib yuboradi — tashqaridan "bot javob
+        # bermayapti" bo'lib ko'rinadi. Webhook allaqachon maxfiy token
+        # bilan himoyalangan (noto'g'ri token darhol 403 oladi), shuning
+        # uchun IP bo'yicha cheklash bu yerda hech narsa qo'shmaydi.
+        self._skip = {"/health", "/healthz", "/", settings.WEBHOOK_PATH}
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http" or scope.get("path") in self._SKIP:
+        if scope["type"] != "http" or scope.get("path") in self._skip:
             return await self.app(scope, receive, send)
 
         # OPTIONS (CORS preflight) tanani ham, bazani ham ishlatmaydi —
@@ -174,6 +203,11 @@ class GlobalRateLimitMiddleware:
                     settings.API_RATE_WINDOW,
                 )
             except HTTPException as exc:
+                # Loglarda IZ QOLDIRAMIZ. Ilgari umumiy limit jimgina
+                # 429 qaytarardi — Railway loglarida hech qanday belgi
+                # yo'q edi. Natijada "ilova javob bermayapti" shikoyatida
+                # sabab limit ekanini bilishning imkoni bo'lmasdi.
+                _log_throttle(scope.get("path", ""), client_ip_from_scope(scope))
                 return await _send_json(send, exc.status_code, exc.detail, exc.headers)
 
         await self.app(scope, receive, send)

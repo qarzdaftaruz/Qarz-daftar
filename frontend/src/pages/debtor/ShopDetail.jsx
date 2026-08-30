@@ -1,13 +1,14 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { tma } from '../../lib/tma'
-import { debtorApi } from '../../lib/api'
+import { debtorApi, errorMessage } from '../../lib/api'
 import { fmt, statusBadge, statusLabel, statusEmoji } from '../../lib/utils'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer
 } from 'recharts'
 import { ChevronDown, ChevronUp, ArrowLeft } from 'lucide-react'
+import LoadError from '../../components/ui/LoadError'
 
 function BackBtn({ onClick }) {
   return (
@@ -50,6 +51,7 @@ export default function DebtorShopDetail() {
   const navigate          = useNavigate()
   const [data, setData]   = useState(null)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
   const [expanded, setExpanded] = useState(null)
 
   useEffect(() => {
@@ -59,10 +61,14 @@ export default function DebtorShopDetail() {
   }, [])
 
   const load = async () => {
-    setLoading(true)
+    setLoading(true); setLoadError('')
     try {
       const res = await debtorApi.shopDetail(shopId)
       setData(res.data)
+    } catch (e) {
+      // Ilgari catch yo'q edi: `data` null qolib, sahifa `return null`
+      // qilardi — foydalanuvchi bo'sh oq ekran ko'rardi
+      setLoadError(errorMessage(e, "Do'kon ma'lumoti yuklanmadi"))
     } finally { setLoading(false) }
   }
 
@@ -84,7 +90,7 @@ export default function DebtorShopDetail() {
     </div>
   )
 
-  if (!data) return null
+  if (!data) return <LoadError message={loadError || "Ma'lumot topilmadi"} onRetry={load} />
 
   const activeDebts = data.debts.filter(d => ['open','partial','overdue'].includes(d.status))
   const closedDebts = data.debts.filter(d => d.status === 'closed')

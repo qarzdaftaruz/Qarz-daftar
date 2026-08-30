@@ -5,6 +5,7 @@ import { tma } from '../../lib/tma'
 import { ownerApi, errorMessage } from '../../lib/api'
 import { useAuth } from '../../hooks/useAuth'
 import { useTimedState } from '../../hooks/useTimedState'
+import LoadError from '../../components/ui/LoadError'
 import { fmt, statusBadge, statusLabel, statusEmoji } from '../../lib/utils'
 import Sheet from '../../components/ui/Sheet'
 import ConfirmStamp from '../../components/ui/ConfirmStamp'
@@ -43,6 +44,7 @@ export default function ClientDetail() {
   const [debtForm, setDebtForm] = useState({ amount: '', due_date: '', note: '' })
   const [payAmount, setPayAmount] = useState('')
   const [saving, setSaving]     = useState(false)
+  const [loadError, setLoadError] = useState('')
   const [reminding, setReminding] = useState(false)
   const [toast, setToast]       = useTimedState('')
   const [warning, setWarning]   = useTimedState('')
@@ -60,10 +62,14 @@ export default function ClientDetail() {
   }, [])
 
   const load = async () => {
-    setLoading(true)
+    setLoading(true); setLoadError('')
     try {
       const res = await ownerApi.getClient(currentShopId, id)
       setClient(res.data)
+    } catch (e) {
+      // Ilgari catch yo'q edi: `client` null qolib, quyidagi shart
+      // tufayli skeleton ABADIY aylanardi
+      setLoadError(errorMessage(e, "Mijoz ma'lumoti yuklanmadi"))
     } finally { setLoading(false) }
   }
 
@@ -135,8 +141,19 @@ export default function ClientDetail() {
 
   const archiveClient = async () => {
     if (!confirm(`${client.full_name} ni o'chirasizmi?`)) return
-    await ownerApi.delClient(currentShopId, id)
-    navigate('/clients')
+    setSaving(true)
+    try {
+      await ownerApi.delClient(currentShopId, id)
+      navigate('/clients')
+    } catch (e) {
+      // Ilgari catch yo'q edi: server rad etsa ham sahifa jim turardi
+      tma.haptic('error')
+      setToast(errorMessage(e, "Mijoz o'chirilmadi"))
+    } finally { setSaving(false) }
+  }
+
+  if (!loading && !client) {
+    return <LoadError message={loadError || 'Mijoz topilmadi'} onRetry={load} />
   }
 
   if (loading || !client) {

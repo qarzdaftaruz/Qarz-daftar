@@ -545,6 +545,20 @@ async def send_monthly_reports():
     logger.info("Oylik hisobotlar: %s yuborildi, %s o'tkazildi, %s xato", sent, skipped, failed)
 
 
+# ─── Bot webhook nazorati ─────────────────────────────────────────────────────
+
+async def check_webhook():
+    """Webhook Telegram tomonida joyidami — yo'qolgan bo'lsa tiklaydi.
+
+    Bot jim qolib qolgani bir necha kun sezilmasligi mumkin: chiquvchi
+    eslatmalar ishlayveradi, faqat KELUVCHI xabarlar yo'qoladi. Shu
+    tekshiruv nosozlikni 15 daqiqada topadi va logga ochiq yozadi.
+    """
+    from app.bot.main import ensure_webhook
+
+    await ensure_webhook()
+
+
 # ─── Rejalashtirish ───────────────────────────────────────────────────────────
 
 def setup_scheduler(hour: int = 9, minute: int = 0):
@@ -578,6 +592,10 @@ def setup_scheduler(hour: int = 9, minute: int = 0):
     # Qarzdorga «bugun/ertaga muddat tugaydi»
     job(send_due_reminders,          "due_reminder",
         CronTrigger(hour=settings.DUE_REMINDER_HOUR, minute=30, timezone=UZ_TZ))
+
+    # Bot webhook'i joyidami (deploy paytidagi poyga holatiga qarshi zaxira)
+    if settings.webhook_full_url:
+        job(check_webhook, "webhook_check", CronTrigger(minute="*/15", timezone=UZ_TZ), grace=300)
 
     # Har oyning 1-sanasi — Excel hisobotlar (og'ir vazifa, kengroq grace)
     job(send_monthly_reports,        "monthly_report",

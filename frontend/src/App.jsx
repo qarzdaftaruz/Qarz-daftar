@@ -58,6 +58,7 @@ const AdminSuper     = lazyWithRetry(() => import('./pages/admin/Super'))
 const AdminUsers     = lazyWithRetry(() => import('./pages/admin/Users'))
 const AdminPromo     = lazyWithRetry(() => import('./pages/admin/Promo'))
 const AdminAudit     = lazyWithRetry(() => import('./pages/admin/Audit'))
+const AdminSupport   = lazyWithRetry(() => import('./pages/admin/Support'))
 const AdminSettings  = lazyWithRetry(() => import('./pages/admin/Settings'))
 const AdminProfile   = lazyWithRetry(() => import('./pages/admin/Profile'))
 
@@ -98,6 +99,7 @@ function AdminRoutes() {
                   <Route path="users"    element={<AdminUsers />} />
                   <Route path="promo"    element={<AdminPromo />} />
                   <Route path="audit"    element={<AdminAudit />} />
+                  <Route path="support"  element={<AdminSupport />} />
                   <Route path="profile"  element={<AdminProfile />} />
                   <Route path="settings" element={<AdminSettings />} />
                 </Routes>
@@ -146,18 +148,24 @@ function NeedBotScreen({
   )
 }
 
-function ErrorScreen() {
+function ErrorScreen({ text, onRetry }) {
   return (
     <div className="flex items-center justify-center min-h-screen px-6 text-center"
       style={{ background: 'var(--tg-theme-bg-color, #fff)' }}>
       <div>
         <p className="text-4xl mb-4">⚠️</p>
         <h1 className="text-xl font-bold mb-2" style={{ color: 'var(--tg-theme-text-color)' }}>
-          Ulanish xatosi
+          Ochib bo'lmadi
         </h1>
-        <p className="text-sm" style={{ color: 'var(--tg-theme-hint-color)' }}>
-          Internet aloqasini tekshiring
+        <p className="text-sm mb-6 max-w-xs mx-auto leading-relaxed" style={{ color: 'var(--tg-theme-hint-color)' }}>
+          {text || 'Internet aloqasini tekshiring'}
         </p>
+        {onRetry && (
+          <button onClick={onRetry} className="px-6 py-3 rounded-xl text-white font-medium text-sm"
+            style={{ background: 'var(--tg-theme-button-color, #2678b6)' }}>
+            Qayta urinish
+          </button>
+        )}
       </div>
     </div>
   )
@@ -223,7 +231,7 @@ function TMARoutes() {
   }
 
   if (auth.loading) return <Spinner />
-  if (auth.error) return <ErrorScreen />
+  if (auth.error) return <ErrorScreen text={auth.errorText} onRetry={auth.refresh} />
   if (!auth.hasAccount) return <NeedBotScreen />
 
   const hasAnyShop = auth.shops.length > 0

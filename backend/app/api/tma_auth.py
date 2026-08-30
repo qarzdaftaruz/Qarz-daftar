@@ -13,7 +13,8 @@ from app.core.ratelimit import auth_rate_limit, write_rate_limit, user_write_rat
 from app.core import cache, audit
 from app.config import settings
 from app.utils.helpers import (
-    normalize_phone, is_valid_phone, esc, notify_telegram, phone_variants,
+    normalize_phone, is_valid_phone, esc, notify_telegram, notify_telegram_bg,
+    phone_variants,
 )
 
 router = APIRouter(prefix="/api/tma")

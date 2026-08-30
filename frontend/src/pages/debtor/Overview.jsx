@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { debtorApi } from '../../lib/api'
+import { debtorApi, errorMessage } from '../../lib/api'
 import { fmt } from '../../lib/utils'
 import { ChevronRight, AlertCircle, User, Store } from 'lucide-react'
 import ContextSwitcher from '../../components/layout/ContextSwitcher'
 import Money from '../../components/ui/Money'
+import LoadError from '../../components/ui/LoadError'
 
 function Skeleton() {
   return (
@@ -18,15 +19,18 @@ function Skeleton() {
 export default function DebtorOverview() {
   const [data, setData]       = useState(null)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
   const navigate              = useNavigate()
 
   useEffect(() => { load() }, [])
 
   const load = async () => {
-    setLoading(true)
+    setLoading(true); setLoadError('')
     try {
       const res = await debtorApi.overview()
       setData(res.data)
+    } catch (e) {
+      setLoadError(errorMessage(e, "Qarzlar ro'yxati yuklanmadi"))
     } finally { setLoading(false) }
   }
 
@@ -64,7 +68,9 @@ export default function DebtorOverview() {
         <ContextSwitcher />
       </div>
 
-      {loading ? <Skeleton /> : (
+      {loading ? <Skeleton /> : loadError && !data ? (
+        <LoadError message={loadError} onRetry={load} />
+      ) : (
         <div style={{ padding: '16px 16px 0', display: 'flex', flexDirection: 'column', gap: 12 }}>
 
           {/* Muddati o'tgan qarz — eng muhim ma'lumot, eng yuqorida */}

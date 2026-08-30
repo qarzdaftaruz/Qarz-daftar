@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useEffect, useMemo, useRef } from 'react'
 import { tma } from '../lib/tma'
-import { authApi } from '../lib/api'
+import { authApi, errorMessage } from '../lib/api'
 
 const AuthCtx = createContext(null)
 
@@ -9,6 +9,7 @@ export function AuthProvider({ children }) {
     loading: true,
     hasAccount: false,
     error: false,
+    errorText: '',
     user: null,
     shops: [],
     isDebtor: false,
@@ -41,6 +42,7 @@ export function AuthProvider({ children }) {
         loading: false,
         hasAccount: !!has_account,
         error: false,
+        errorText: '',
         user: user || null,
         shops: shops || [],
         isDebtor: !!is_debtor,
@@ -52,7 +54,13 @@ export function AuthProvider({ children }) {
         setView(active.length > 0 ? 'owner' : 'debtor')
       }
     } catch (e) {
-      setState(s => ({ ...s, loading: false, error: true }))
+      // XATO TUZATILDI: sabab tashlab yuborilardi va ekranda doim
+      // «Internet aloqasini tekshiring» chiqardi — bloklangan akkaunt
+      // egasi ham shu xabarni ko'rib, muammoni internetdan izlardi.
+      setState(s => ({
+        ...s, loading: false, error: true,
+        errorText: errorMessage(e, "Ulanib bo‘lmadi"),
+      }))
     }
   }
 

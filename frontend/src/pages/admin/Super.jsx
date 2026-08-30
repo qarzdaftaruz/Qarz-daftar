@@ -35,6 +35,7 @@ export default function AdminSuper() {
     const t = setTimeout(async () => {
       setSearching(true)
       try { const r = await superApi.search(q.trim()); setResults(r.data) }
+      catch (e) { setErr(errorMessage(e, 'Qidiruv bajarilmadi')); setResults(null) }
       finally { setSearching(false) }
     }, 350)
     return () => clearTimeout(t)
@@ -42,8 +43,15 @@ export default function AdminSuper() {
 
   const openShop = async (s) => {
     setShop({ id: s.id, name: s.name, clients: [], loading: true })
-    const r = await superApi.shopClients(s.id)
-    setShop({ id: s.id, name: r.data.shop_name, clients: r.data.clients, loading: false })
+    try {
+      const r = await superApi.shopClients(s.id)
+      setShop({ id: s.id, name: r.data.shop_name, clients: r.data.clients, loading: false })
+    } catch (e) {
+      // Ilgari catch yo'q edi — so'rov yiqilsa "yuklanmoqda" holati
+      // abadiy qolib ketardi va sabab faqat konsolda ko'rinardi
+      setErr(errorMessage(e, "Do'kon ochilmadi"))
+      setShop(null)
+    }
   }
 
   // Do'konlar sahifasidan "Kirish" tugmasi orqali ?shop=<id> bilan kelganda
@@ -56,13 +64,20 @@ export default function AdminSuper() {
   const openClient = async (cid) => {
     setClientId(cid); setClient(null); setClientLoading(true); setTab('debts')
     try { const r = await superApi.client(cid); setClient(r.data) }
+    catch (e) { setErr(errorMessage(e, 'Mijoz ochilmadi')); setClientId(null) }
     finally { setClientLoading(false) }
   }
   const closeClient = () => { setClientId(null); setClient(null) }
 
   const reloadClient = async () => {
-    if (clientId) { const r = await superApi.client(clientId); setClient(r.data) }
-    if (shop) { const sr = await superApi.shopClients(shop.id); setShop(s => ({ ...s, clients: sr.data.clients })) }
+    try {
+      if (clientId) { const r = await superApi.client(clientId); setClient(r.data) }
+      if (shop) { const sr = await superApi.shopClients(shop.id); setShop(s => ({ ...s, clients: sr.data.clients })) }
+    } catch (e) {
+      // Amal BAJARILDI, faqat yangilash yiqildi. Buni aniq aytish shart:
+      // aks holda admin eski qoldiqni ko'rib to'lovni takror kiritishi mumkin.
+      setErr(errorMessage(e, "Ma'lumot yangilanmadi — sahifani yangilang"))
+    }
   }
 
   // ── Modal (add debt / pay / edit debt) ──
@@ -95,8 +110,13 @@ export default function AdminSuper() {
 
   const deleteDebt = async (debt) => {
     if (!confirm("Bu qarzni butunlay o'chirasizmi? (qaytarib bo'lmaydi)")) return
-    await superApi.deleteDebt(debt.id)
-    await reloadClient()
+    setSaving(true); setErr('')
+    try {
+      await superApi.deleteDebt(debt.id)
+      await reloadClient()
+    } catch (e) {
+      setErr(errorMessage(e, "Qarz o'chirilmadi"))
+    } finally { setSaving(false) }
   }
 
   const [exporting, setExporting] = useState(false)
@@ -113,6 +133,13 @@ export default function AdminSuper() {
 
   return (
     <div className="p-6 lg:p-8 animate-fade-in">
+      {err && !modal && (
+        <div className="mb-4 flex items-start gap-2 bg-rose-50 border border-rose-200 rounded-xl px-4 py-3">
+          <AlertCircle size={18} className="text-rose-600 shrink-0 mt-0.5" />
+          <p className="text-sm text-rose-800 flex-1">{err}</p>
+          <button onClick={() => setErr('')} className="text-rose-400 hover:text-rose-600"><X size={16} /></button>
+        </div>
+      )}
       {/* Header */}
       {shop ? (
         <div className="flex items-center gap-3 mb-5">

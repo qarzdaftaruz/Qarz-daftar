@@ -24,7 +24,7 @@ from app.utils.helpers import (
     generate_debt_number, format_money, debt_notification,
     safe_regex, month_starts, month_label, esc,
     to_naive_utc, parse_due_date, debt_status_for, subscription_expired,
-    restart_trial_if_expired, notify_debtor_bg, notify_telegram_bg,
+    subscription_end_at, restart_trial_if_expired, notify_debtor_bg, notify_telegram_bg,
 )
 from app.utils import reminders
 
@@ -476,10 +476,16 @@ async def unblock(sid: str, request: Request, current: AdminAuth = Depends(get_c
 
     # Obuna muddati tugagan bo'lsa blokdan chiqarishning foydasi yo'q:
     # do'kon baribir ochilmaydi va keyingi tekshiruvda qayta bloklanadi.
+    # Shu sabab aniq sana bilan tushuntiramiz — admin «Uzaytirish»
+    # tugmasini bosishi kerak (u ham blokdan chiqaradi).
     if subscription_expired(shop):
+        end = subscription_end_at(shop)
+        when = f" ({end.strftime('%d.%m.%Y')})" if end else ""
         raise HTTPException(
             400,
-            "Obuna muddati tugagan — avval «Uzaytirish» tugmasi bilan muddatni uzaytiring.",
+            f"Obuna muddati tugagan{when}. Blokdan chiqarish yetarli emas — "
+            "«Uzaytirish» tugmasini bosing, u muddatni uzaytiradi va do'konni "
+            "o'sha zahoti faollashtiradi.",
         )
 
     shop.status = ShopStatus.ACTIVE
@@ -504,11 +510,17 @@ async def extend(sid: str, request: Request, body: ExtendBody = ExtendBody(), cu
     if end < now:
         end = now
     shop.subscription_end = end + timedelta(days=body.days)
-    shop.status = ShopStatus.ACTIVE
+
+    # Uzaytirish bloklangan do'konni O'ZI faollashtiradi — admin ikkinchi
+    # tugmani izlab yurmasin. `pending`/`rejected` holatiga tegilmaydi:
+    # ularni faollashtirish «Tasdiqlash» tugmasining ishi, aks holda
+    # muddat uzaytirish rad etilgan do'konni jimgina ochib yuborardi.
+    if shop.status == ShopStatus.BLOCKED:
+        shop.status = ShopStatus.ACTIVE
     shop.warning_sent = False
     # Muddat tugagani uchun to'xtatilgan bo'lsa — sabab ham tozalanadi
     shop.expired_at = None
-    if shop.block_reason == "Obuna muddati tugadi":
+    if shop.status == ShopStatus.ACTIVE:
         shop.block_reason = None
     shop.updated_at = now
     await shop.save()
@@ -761,6 +773,66 @@ async def delete_promo(pid: str, request: Request, current: AdminAuth = Depends(
         summary=f"Promokod o'chirildi: {p.code}",
     )
     return {"ok": True}
+
+
+# ─── BOT DIAGNOSTIKASI ────────────────────────────────────────────────────────
+
+@router.get("/bot-status")
+async def bot_status(_: AdminAuth = Depends(get_current_super_admin)):
+    """«Bot ishlamayapti» shikoyatida birinchi qaraladigan joy.
+
+    Telegram tomonidagi HAQIQIY holatni qaytaradi: token amal qiladimi,
+    webhook qaysi manzilga qo'yilgan, Telegram oxirgi marta qanday xatoga
+    urilgan va nechta xabar navbatda turibdi. Bularsiz sabab faqat
+    Railway loglarini titib topilardi.
+    """
+    from app.bot.main import bot
+
+    result: dict = {
+        "mode": "webhook" if settings.webhook_full_url else "polling",
+        "expected_url": settings.webhook_full_url,
+        "mini_app_url": settings.MINI_APP_URL,
+    }
+
+    try:
+        me = await bot.get_me()
+        result["bot"] = {"ok": True, "username": me.username, "id": me.id}
+    except Exception as e:      # noqa: BLE001
+        result["bot"] = {"ok": False, "error": str(e)}
+        result["hint"] = "BOT_TOKEN noto'g'ri yoki bekor qilingan (@BotFather)."
+        return result
+
+    try:
+        info = await bot.get_webhook_info()
+        result["webhook"] = {
+            "url": info.url or None,
+            "pending_updates": info.pending_update_count,
+            "last_error": info.last_error_message,
+            "last_error_at": (
+                datetime.fromtimestamp(info.last_error_date).isoformat()
+                if info.last_error_date else None
+            ),
+        }
+        if settings.webhook_full_url and info.url != settings.webhook_full_url:
+            actual = info.url or "yo'q"
+            result["hint"] = (
+                f"Webhook manzili mos emas: Telegram'da «{actual}», "
+                f"kutilgani «{settings.webhook_full_url}». Serverni qayta ishga tushiring."
+            )
+        elif info.last_error_message:
+            result["hint"] = f"Telegram oxirgi urinishda xatoga uchradi: {info.last_error_message}"
+    except Exception as e:      # noqa: BLE001
+        result["webhook"] = {"ok": False, "error": str(e)}
+
+    # Yangi do'kon so'rovi va support xabarlari shu ID ga ketadi
+    result["admin_telegram_id"] = await cache.admin_telegram_id()
+    if not result["admin_telegram_id"]:
+        result.setdefault(
+            "hint",
+            "Sozlamalarda «Admin Telegram ID» bo'sh — yangi do'kon so'rovlari "
+            "va do'kondor xabarlari botga yetib bormaydi.",
+        )
+    return result
 
 
 # ─── SETTINGS ─────────────────────────────────────────────────────────────────
@@ -1332,9 +1404,12 @@ async def export_shops(
         current, "report.export", request=request,
         summary=f"Do'konlar ro'yxati eksport qilindi ({len(rows)} ta)",
     )
-    return _xlsx_response(
-        build_shops_report(rows), f"dokonlar_{utcnow().strftime('%Y-%m-%d')}.xlsx"
-    )
+    # Fayl alohida oqimda yasaladi. 5000 ta do'konlik Excel'ni asosiy
+    # oqimda yasash butun serverni (bot webhook'i bilan birga) bir necha
+    # soniyaga qotirib qo'yardi — pastdagi `export_shop_detail` allaqachon
+    # to'g'ri qilingan, bu joy esa e'tibordan chetda qolgan edi.
+    content = await asyncio.to_thread(build_shops_report, rows)
+    return _xlsx_response(content, f"dokonlar_{utcnow().strftime('%Y-%m-%d')}.xlsx")
 
 
 @router.get("/super/shops/{sid}/export")

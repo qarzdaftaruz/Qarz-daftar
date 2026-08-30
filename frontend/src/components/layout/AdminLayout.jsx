@@ -2,15 +2,16 @@ import { useState, useEffect } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Store, Users, Ticket,
-  UserCircle, Settings, LogOut, NotebookText, Crown, ScrollText,
+  UserCircle, Settings, LogOut, NotebookText, Crown, ScrollText, MessageSquare,
 } from 'lucide-react'
-import { adminProfileApi, clearAdminToken } from '../../lib/api'
+import { adminProfileApi, adminSupportApi, clearAdminToken } from '../../lib/api'
 
 const baseNav = [
   { to: '/admin',          icon: LayoutDashboard, label: 'Dashboard',        end: true },
   { to: '/admin/shops',    icon: Store,           label: "Do'konlar"                   },
   { to: '/admin/users',    icon: Users,           label: 'Foydalanuvchilar'            },
   { to: '/admin/promo',    icon: Ticket,          label: 'Promo kodlar'                },
+  { to: '/admin/support',  icon: MessageSquare,   label: 'Xabarlar',       badge: true },
   { to: '/admin/audit',    icon: ScrollText,      label: 'Amallar tarixi'              },
   { to: '/admin/profile',  icon: UserCircle,      label: 'Profil'                      },
   { to: '/admin/settings', icon: Settings,        label: 'Sozlamalar'                  },
@@ -19,9 +20,14 @@ const baseNav = [
 export default function AdminLayout({ children }) {
   const navigate = useNavigate()
   const [isSuper, setIsSuper] = useState(false)
+  const [unread, setUnread]   = useState(0)
 
   useEffect(() => {
     adminProfileApi.me().then(r => setIsSuper(!!r.data.is_super)).catch(() => {})
+    // O'qilmagan murojaatlar soni — menyuda ko'rinib tursin
+    adminSupportApi.list({ unread_only: true, limit: 1 })
+      .then(r => setUnread(r.data.unread || 0))
+      .catch(() => {})
   }, [])
 
   // Super admin uchun qo'shimcha "Super qidiruv" bo'limi (Dashboard'dan keyin)
@@ -57,7 +63,7 @@ export default function AdminLayout({ children }) {
         </div>
 
         <nav className="flex-1 p-3 space-y-1 overflow-y-auto">
-          {nav.map(({ to, icon: Icon, label, end }) => (
+          {nav.map(({ to, icon: Icon, label, end, badge }) => (
             <NavLink
               key={to}
               to={to}
@@ -73,7 +79,12 @@ export default function AdminLayout({ children }) {
               {({ isActive }) => (
                 <>
                   <Icon size={18} strokeWidth={isActive ? 2.4 : 1.9} className="shrink-0" />
-                  {label}
+                  <span className="flex-1">{label}</span>
+                  {badge && unread > 0 && (
+                    <span className="text-[11px] font-bold px-1.5 min-w-[20px] h-5 inline-flex items-center justify-center rounded-full bg-rose-500 text-white tabular-nums">
+                      {unread > 99 ? '99+' : unread}
+                    </span>
+                  )}
                 </>
               )}
             </NavLink>

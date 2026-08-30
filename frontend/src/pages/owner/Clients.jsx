@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Search, Plus, CreditCard, X } from 'lucide-react'
-import { ownerApi } from '../../lib/api'
+import { ownerApi, errorMessage } from '../../lib/api'
 import { useAuth } from '../../hooks/useAuth'
 import { useTimedState } from '../../hooks/useTimedState'
 import { tma } from '../../lib/tma'
 import { fmt } from '../../lib/utils'
 import Sheet from '../../components/ui/Sheet'
+import LoadError from '../../components/ui/LoadError'
 
 const LIMIT = 20
 const FILTERS = [
@@ -38,6 +39,7 @@ export default function Clients() {
   const [filter, setFilter]           = useState('all')
   const [loading, setLoading]         = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
+  const [loadError, setLoadError]     = useState('')
   const [hasMore, setHasMore]         = useState(true)
 
   const skipRef     = useRef(0)
@@ -58,7 +60,7 @@ export default function Clients() {
   const load = useCallback(async (reset = false) => {
     if (!currentShopId) return
     const skip = reset ? 0 : skipRef.current
-    if (reset) setLoading(true); else setLoadingMore(true)
+    if (reset) { setLoading(true); setLoadError('') } else setLoadingMore(true)
     try {
       const res = await ownerApi.clients(currentShopId, {
         search: search || undefined,
@@ -71,6 +73,10 @@ export default function Clients() {
       setTotal(res.data.total)
       skipRef.current = skip + list.length
       setHasMore(skip + list.length < res.data.total)
+    } catch (e) {
+      // Ilgari catch yo'q edi — so'rov yiqilsa ro'yxat jimgina bo'sh
+      // qolib, "Hali mijozlar yo'q" degan noto'g'ri xabar chiqardi
+      setLoadError(errorMessage(e, "Mijozlar ro'yxati yuklanmadi"))
     } finally {
       reset ? setLoading(false) : setLoadingMore(false)
     }
@@ -259,6 +265,8 @@ export default function Clients() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 4 }}>
             {[...Array(5)].map((_, i) => <div key={i} className="skeleton" style={{ height: 72 }} />)}
           </div>
+        ) : loadError && clients.length === 0 ? (
+          <LoadError message={loadError} onRetry={() => load(true)} />
         ) : clients.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '56px 0' }}>
             <p style={{ fontSize: 44, marginBottom: 8 }}>👥</p>

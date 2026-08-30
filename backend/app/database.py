@@ -224,11 +224,29 @@ async def _seed_defaults():
     await _ensure_admin(
         settings.SUPER_ADMIN_USERNAME, settings.SUPER_ADMIN_PASSWORD, super_tid, True
     )
-    # Oddiy admin (super admindan farq qilsa)
+    # Oddiy admin (super admindan farq qilsa).
+    #
+    # XATO TUZATILDI: ilgari shart faqat «shu nomli hisob bormi?» edi.
+    # Admin panelda o'z loginini o'zgartirsa (yoki keraksiz hisobni
+    # o'chirsa), keyingi har bir deploy'da env'dagi ADMIN_USERNAME bilan
+    # YANGI hisob qayta tiklanardi — egasi bilmagan, env parolli «arvoh»
+    # admin. O'chirilgani ham qaytib kelaverardi.
+    #
+    # Endi env'dan hisob faqat BOOTSTRAP uchun yaratiladi: tizimda
+    # birorta ham oddiy (super bo'lmagan) admin bo'lmasa. Birinchi
+    # o'rnatish avvalgidek ishlaydi, keyin esa panel qarori ustun turadi.
     if settings.ADMIN_USERNAME != settings.SUPER_ADMIN_USERNAME:
-        await _ensure_admin(
-            settings.ADMIN_USERNAME, settings.ADMIN_PASSWORD, settings.ADMIN_TELEGRAM_ID, False
-        )
+        has_regular = await AdminAuth.find_one(AdminAuth.is_super == False)  # noqa: E712
+        if has_regular is None:
+            await _ensure_admin(
+                settings.ADMIN_USERNAME, settings.ADMIN_PASSWORD, settings.ADMIN_TELEGRAM_ID, False
+            )
+        elif has_regular.username != settings.ADMIN_USERNAME:
+            logger.info(
+                "Oddiy admin allaqachon mavjud (%s) — env'dagi ADMIN_USERNAME=%s "
+                "bo'yicha yangi hisob YARATILMADI",
+                has_regular.username, settings.ADMIN_USERNAME,
+            )
 
     # telegram_id ni env bilan sinxronlaymiz (bot orqali parol tiklash uchun).
     # DIQQAT: parol hech qachon env'dan qayta yozilmaydi — panelda o'zgartirilgani saqlanadi.

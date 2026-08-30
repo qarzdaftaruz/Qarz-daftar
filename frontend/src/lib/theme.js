@@ -36,9 +36,21 @@ export function forceLightTheme() {
   const wa = window.Telegram?.WebApp
   if (wa) {
     try { wa.expand?.() } catch {}
-    // Native chrome (header / fon) ham yorug' bo'lsin
-    try { wa.setBackgroundColor?.('#f3f4f6') } catch {}
-    try { wa.setHeaderColor?.('#ffffff') } catch {}
+    // Native chrome (header / fon) ham yorug' bo'lsin.
+    //
+    // Versiya tekshiruvi SHART: bu ikki metod Telegram 6.1 dan boshlab
+    // qo'llab-quvvatlanadi. Eski mijozlarda SDK xato TASHLAMAYDI — u
+    // faqat konsolga «Background color is not supported in version 6.0»
+    // deb yozadi, ya'ni try/catch yordam bermaydi. Natijada har bir
+    // ochilishda ikkita ogohlantirish chiqib, haqiqiy xatolar
+    // konsolda ko'zdan qochardi.
+    const canSetColors = (() => {
+      try { return wa.isVersionAtLeast?.('6.1') ?? false } catch { return false }
+    })()
+    if (canSetColors) {
+      try { wa.setBackgroundColor?.('#f3f4f6') } catch {}
+      try { wa.setHeaderColor?.('#ffffff') } catch {}
+    }
     // Foydalanuvchi temani almashtirsa — qayta majburlaymiz
     try { wa.onEvent?.('themeChanged', apply) } catch {}
   }

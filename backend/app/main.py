@@ -13,7 +13,7 @@ from aiogram.types import Update
 from app.config import settings
 from app.database import init_db, close_db
 from app.api import router
-from app.bot.main import bot, dp, setup_bot
+from app.bot.main import bot, dp, setup_bot, install_webhook
 from app.core.middleware import (
     SecurityHeadersMiddleware, BodySizeLimitMiddleware, GlobalRateLimitMiddleware,
 )
@@ -87,13 +87,7 @@ async def lifespan(app: FastAPI):
 
     webhook_url = settings.webhook_full_url
     if webhook_url:
-        await bot.set_webhook(
-            webhook_url,
-            drop_pending_updates=True,
-            secret_token=settings.TELEGRAM_WEBHOOK_SECRET,
-            allowed_updates=dp.resolve_used_update_types(),
-        )
-        logger.info("Webhook o'rnatildi: %s", webhook_url)
+        await install_webhook(webhook_url)
     else:
         if settings.is_production:
             logger.warning(
@@ -130,11 +124,23 @@ async def lifespan(app: FastAPI):
             except (asyncio.CancelledError, Exception):   # noqa: B014
                 pass
 
-        if webhook_url:
-            try:
-                await bot.delete_webhook()
-            except Exception as e:      # noqa: BLE001
-                logger.warning("Webhook o'chirilmadi: %s", e)
+        # DIQQAT: bu yerda `bot.delete_webhook()` CHAQIRILMAYDI.
+        #
+        # XATO TUZATILDI (botning jim qolishining ASOSIY sababi): Railway
+        # deploy paytida yangi konteynerni ishga tushiradi, healthcheck
+        # o'tgach eskisini to'xtatadi. Ya'ni ikkalasi bir muddat birga
+        # ishlaydi. Yangi konteyner startda webhook'ni o'rnatadi
+        # («Webhook o'rnatildi» logi chiqadi), oradan bir necha soniya
+        # o'tib Railway ESKI konteynerni to'xtatadi va uning shu yerdagi
+        # `delete_webhook` chaqiruvi endigina o'rnatilgan webhook'ni
+        # O'CHIRIB yuborardi. Natijada loglar "hammasi joyida" deb tursa
+        # ham Telegram birorta xabar yubormasdi va bot keyingi deploy'gacha
+        # butunlay jim qolardi. Chiquvchi xabarlar (eslatmalar) ishlayverardi —
+        # shuning uchun nosozlik sezilmasdi.
+        #
+        # Webhook'ni to'xtashda o'chirish hech qanday foyda bermaydi:
+        # u startda baribir qayta o'rnatiladi, polling rejimi esa startda
+        # o'zi `delete_webhook` qiladi.
 
         await bot.session.close()
         await close_db()

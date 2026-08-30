@@ -1,12 +1,13 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Users, FileText, AlertTriangle, Clock, ChevronRight, ChevronDown, Check, Plus, TrendingUp } from 'lucide-react'
-import { ownerApi } from '../../lib/api'
+import { ownerApi, errorMessage } from '../../lib/api'
 import { useAuth } from '../../hooks/useAuth'
 import { fmt, statusEmoji, statusBadge } from '../../lib/utils'
 import ContextSwitcher from '../../components/layout/ContextSwitcher'
 import Sheet from '../../components/ui/Sheet'
 import Money from '../../components/ui/Money'
+import LoadError from '../../components/ui/LoadError'
 
 function Skeleton() {
   return (
@@ -24,6 +25,7 @@ function Skeleton() {
 export default function Dashboard() {
   const [data, setData]           = useState(null)
   const [loading, setLoading]     = useState(true)
+  const [loadError, setLoadError] = useState('')
   const [shopSheet, setShopSheet] = useState(false)
   const { currentShopId, activeShops, pendingShops, setShop, user } = useAuth()
   const navigate = useNavigate()
@@ -31,10 +33,12 @@ export default function Dashboard() {
   useEffect(() => { if (currentShopId) load() }, [currentShopId])
 
   const load = async () => {
-    setLoading(true)
+    setLoading(true); setLoadError('')
     try {
       const res = await ownerApi.dashboard(currentShopId)
       setData(res.data)
+    } catch (e) {
+      setLoadError(errorMessage(e, 'Panel yuklanmadi'))
     } finally { setLoading(false) }
   }
 
@@ -118,7 +122,9 @@ export default function Dashboard() {
         )}
       </div>
 
-      {loading ? <Skeleton /> : (
+      {loading ? <Skeleton /> : loadError && !data ? (
+        <LoadError message={loadError} onRetry={load} />
+      ) : (
         <div style={{ padding: '16px 16px 0', display: 'flex', flexDirection: 'column', gap: 12 }}>
 
           {/* Hero card — gradient */}

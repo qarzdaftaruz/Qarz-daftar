@@ -3,7 +3,8 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts'
 import { Store, CheckCircle2, Clock, Ban, Users } from 'lucide-react'
-import { adminDashApi } from '../../lib/api'
+import { adminDashApi, errorMessage } from '../../lib/api'
+import LoadError from '../../components/ui/LoadError'
 
 function Stat({ icon: Icon, label, value, from, to, shadow }) {
   return (
@@ -23,10 +24,16 @@ function Stat({ icon: Icon, label, value, from, to, shadow }) {
 export default function AdminDashboard() {
   const [data, setData]     = useState(null)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
 
-  useEffect(() => {
-    adminDashApi.get().then(r => setData(r.data)).finally(() => setLoading(false))
-  }, [])
+  const load = () => {
+    setLoading(true); setLoadError('')
+    adminDashApi.get()
+      .then(r => setData(r.data))
+      .catch(e => setLoadError(errorMessage(e, 'Dashboard yuklanmadi')))
+      .finally(() => setLoading(false))
+  }
+  useEffect(() => { load() }, [])
 
   const s = data?.stats
 
@@ -41,6 +48,8 @@ export default function AdminDashboard() {
           </div>
           <div className="skeleton h-72 w-full" />
         </>
+      ) : loadError && !data ? (
+        <LoadError message={loadError} onRetry={load} />
       ) : (
         <>
           <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-6">

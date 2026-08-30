@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { adminShopsApi, adminProfileApi, adminExportApi, errorMessage } from '../../lib/api'
 import ConfirmStamp from '../../components/ui/ConfirmStamp'
-import { Check, CalendarPlus, Ban, XCircle, RotateCcw, Trash2, LogIn, FileSpreadsheet, ArchiveRestore } from 'lucide-react'
+import { Check, CalendarPlus, Ban, XCircle, RotateCcw, Trash2, LogIn, FileSpreadsheet, ArchiveRestore, AlertTriangle, X } from 'lucide-react'
 
 const TABS = [
   { key: null,       label: 'Barchasi' },
@@ -36,6 +36,11 @@ export default function AdminShops() {
   const [days, setDays]     = useState(30)
   const [stamp, setStamp]   = useState(false)
   const [isSuper, setIsSuper] = useState(false)
+  // Backend rad etgan amal (masalan «muddati tugagan do'konni blokdan
+  // chiqarib bo'lmaydi») ilgari faqat brauzer konsoliga tushardi —
+  // admin tugmani bosaverib, nima uchun ishlamayotganini bilmasdi.
+  const [error, setError]   = useState('')
+  const [busy, setBusy]     = useState(false)
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -45,20 +50,36 @@ export default function AdminShops() {
   const load = async () => {
     setLoading(true)
     try { const res = await adminShopsApi.list(status ? { status } : {}); setShops(res.data.shops); setTotal(res.data.total) }
+    catch (e) { setError(errorMessage(e, "Ro'yxat yuklanmadi")) }
     finally { setLoading(false) }
   }
   useEffect(() => { load() }, [status])
 
   const act = async (fn, ...args) => {
-    await fn(...args); setModal(null); setReason(''); setSelected(null); load()
+    setBusy(true); setError('')
+    try {
+      await fn(...args)
+      setModal(null); setReason(''); setSelected(null)
+      load()
+    } catch (e) {
+      // Modal ochiq qoladi — admin sababni o'qib, boshqa yo'l tanlaydi
+      setError(errorMessage(e, 'Amal bajarilmadi'))
+    } finally { setBusy(false) }
   }
   const approveShop = async (id) => {
-    await adminShopsApi.approve(id)
-    setStamp(true)
-    setTimeout(() => setStamp(false), 1700)
-    load()
+    setBusy(true); setError('')
+    try {
+      await adminShopsApi.approve(id)
+      setStamp(true)
+      setTimeout(() => setStamp(false), 1700)
+      load()
+    } catch (e) { setError(errorMessage(e, 'Tasdiqlanmadi')) }
+    finally { setBusy(false) }
   }
-  const open = (type, shop) => { setSelected(shop); setModal(type) }
+  const open = (type, shop) => {
+    setSelected(shop); setModal(type); setError('')
+    if (type === 'extend') setDays(30)
+  }
 
   const [exporting, setExporting] = useState(false)
   const exportExcel = async () => {
@@ -86,6 +107,16 @@ export default function AdminShops() {
           <FileSpreadsheet size={16} /> {exporting ? 'Tayyorlanmoqda…' : 'Excel'}
         </button>
       </div>
+
+      {error && !modal && (
+        <div className="mb-4 flex items-start gap-2 bg-rose-50 border border-rose-200 rounded-xl px-4 py-3">
+          <AlertTriangle size={18} className="text-rose-600 shrink-0 mt-0.5" />
+          <p className="text-sm text-rose-800 flex-1">{error}</p>
+          <button onClick={() => setError('')} className="text-rose-400 hover:text-rose-600">
+            <X size={16} />
+          </button>
+        </div>
+      )}
 
       <div className="flex gap-2 mb-5 flex-wrap">
         {TABS.map(t => (
@@ -130,10 +161,20 @@ export default function AdminShops() {
                   <span className={`text-xs px-2.5 py-1 rounded-full font-semibold ${BADGE[s.status]}`}>{LABEL[s.status]}</span>
                   {s.deleted_by && <p className="text-[11px] text-slate-400 mt-1">o'chirgan: {s.deleted_by}</p>}
                 </td>
-                <td className="px-4 py-3 text-slate-400 text-xs tabular-nums">
-                  {s.status === 'deleted'
-                    ? <span className="text-rose-600 font-semibold">{s.purge_in_days} kundan keyin yo'q qilinadi</span>
-                    : new Date(s.trial_end).toLocaleDateString('uz')}
+                <td className="px-4 py-3 text-xs tabular-nums">
+                  {s.status === 'deleted' ? (
+                    <span className="text-rose-600 font-semibold">{s.purge_in_days} kundan keyin yo'q qilinadi</span>
+                  ) : (
+                    <>
+                      <p className={s.is_expired ? 'text-rose-600 font-semibold' : 'text-slate-500'}>
+                        {new Date(s.subscription_end || s.trial_end).toLocaleDateString('uz')}
+                      </p>
+                      <p className="text-[11px] text-slate-400">
+                        {s.subscription_end ? 'obuna' : 'sinov muddati'}
+                        {s.is_expired && ' · tugagan'}
+                      </p>
+                    </>
+                  )}
                 </td>
                 {isSuper && (
                   <td className="px-4 py-3">
@@ -161,7 +202,14 @@ export default function AdminShops() {
                       <button onClick={() => open('extend', s)} className={`${pill} bg-blue-50 text-blue-600 ring-1 ring-blue-200 hover:bg-blue-100`}><CalendarPlus size={14} /> Uzaytirish</button>
                       <button onClick={() => open('block', s)} className={`${pill} bg-amber-50 text-amber-600 ring-1 ring-amber-200 hover:bg-amber-100`}><Ban size={14} /> Bloklash</button>
                     </>}
-                    {s.status === 'blocked' && <button onClick={() => act(adminShopsApi.unblock, s.id)} className={`${pill} bg-green-600 text-white hover:bg-green-700 shadow-sm shadow-green-600/30`}><RotateCcw size={14} /> Blokdan chiqarish</button>}
+                    {s.status === 'blocked' && <>
+                      <button onClick={() => open('extend', s)} className={`${pill} bg-blue-50 text-blue-600 ring-1 ring-blue-200 hover:bg-blue-100`}><CalendarPlus size={14} /> Uzaytirish</button>
+                      {/* Muddati tugagan do'konni blokdan chiqarib bo'lmaydi —
+                          faqat uzaytirish orqali ochiladi */}
+                      {!s.is_expired && (
+                        <button onClick={() => act(adminShopsApi.unblock, s.id)} className={`${pill} bg-green-600 text-white hover:bg-green-700 shadow-sm shadow-green-600/30`}><RotateCcw size={14} /> Blokdan chiqarish</button>
+                      )}
+                    </>}
                     <button onClick={() => open('delete', s)} title="O'chirish" className={`${iconBtn} bg-rose-50 text-rose-600 ring-1 ring-rose-200 hover:bg-rose-100`}><Trash2 size={15} /></button>
                     </>}
                   </div>
@@ -190,9 +238,15 @@ export default function AdminShops() {
                     <b> 30 kun</b> saqlanadi — shu muddat ichida qaytarish mumkin.
                   </p>
                 </div>
+                {error && (
+                  <div className="flex items-start gap-2 bg-rose-50 border border-rose-200 rounded-xl px-3.5 py-2.5 mb-4">
+                    <AlertTriangle size={16} className="text-rose-600 shrink-0 mt-0.5" />
+                    <p className="text-sm text-rose-800">{error}</p>
+                  </div>
+                )}
                 <div className="flex gap-2">
-                  <button onClick={() => { setModal(null); setSelected(null) }} className="flex-1 py-2.5 bg-slate-100 text-slate-700 rounded-xl text-sm font-medium hover:bg-slate-200 transition-colors">Bekor</button>
-                  <button onClick={() => act(adminShopsApi.delete, selected.id)} className="flex-1 py-2.5 bg-red-600 text-white rounded-xl text-sm font-medium hover:bg-red-700 transition-colors">Ha, o'chirish</button>
+                  <button onClick={() => { setModal(null); setSelected(null); setError('') }} className="flex-1 py-2.5 bg-slate-100 text-slate-700 rounded-xl text-sm font-medium hover:bg-slate-200 transition-colors">Bekor</button>
+                  <button disabled={busy} onClick={() => act(adminShopsApi.delete, selected.id)} className="flex-1 py-2.5 bg-red-600 text-white rounded-xl text-sm font-medium hover:bg-red-700 transition-colors disabled:opacity-60">{busy ? 'O‘chirilmoqda…' : "Ha, o'chirish"}</button>
                 </div>
               </>
             ) : modal === 'purge' ? (
@@ -208,20 +262,58 @@ export default function AdminShops() {
                     Bu amalni <b>qaytarib bo'lmaydi</b>. 30 kunni kutmasdan o'chirmoqchi bo'lsangizgina bosing.
                   </p>
                 </div>
+                {error && (
+                  <div className="flex items-start gap-2 bg-rose-50 border border-rose-200 rounded-xl px-3.5 py-2.5 mb-4">
+                    <AlertTriangle size={16} className="text-rose-600 shrink-0 mt-0.5" />
+                    <p className="text-sm text-rose-800">{error}</p>
+                  </div>
+                )}
                 <div className="flex gap-2">
-                  <button onClick={() => { setModal(null); setSelected(null) }} className="flex-1 py-2.5 bg-slate-100 text-slate-700 rounded-xl text-sm font-medium hover:bg-slate-200 transition-colors">Bekor</button>
-                  <button onClick={() => act(adminShopsApi.purge, selected.id)} className="flex-1 py-2.5 bg-slate-900 text-white rounded-xl text-sm font-medium hover:bg-black transition-colors">Butunlay o'chirish</button>
+                  <button onClick={() => { setModal(null); setSelected(null); setError('') }} className="flex-1 py-2.5 bg-slate-100 text-slate-700 rounded-xl text-sm font-medium hover:bg-slate-200 transition-colors">Bekor</button>
+                  <button disabled={busy} onClick={() => act(adminShopsApi.purge, selected.id)} className="flex-1 py-2.5 bg-slate-900 text-white rounded-xl text-sm font-medium hover:bg-black transition-colors disabled:opacity-60">{busy ? 'Bajarilmoqda…' : "Butunlay o'chirish"}</button>
                 </div>
               </>
             ) : (
               <>
                 <h3 className="font-display font-bold text-slate-900 mb-1">{modal === 'reject' ? 'Rad etish' : modal === 'block' ? 'Bloklash' : 'Obunani uzaytirish'}</h3>
                 <p className="text-sm text-slate-500 mb-4">🏪 {selected.name}</p>
+                {modal === 'extend' && selected.status === 'blocked' && (
+                  <div className="bg-blue-50 border border-blue-100 rounded-xl px-4 py-3 mb-4">
+                    <p className="text-sm text-blue-800">
+                      Do'kon hozir bloklangan{selected.is_expired ? ' (obuna muddati tugagan)' : ''}.
+                      Uzaytirish uni <b>o'sha zahoti faollashtiradi</b>.
+                    </p>
+                  </div>
+                )}
                 {(modal === 'reject' || modal === 'block') && <textarea className="w-full px-3.5 py-2.5 bg-slate-50 border-2 border-transparent rounded-xl text-sm outline-none focus:border-blue-500 focus:bg-white resize-none h-24 mb-4 transition-all" placeholder="Sabab (ixtiyoriy)…" value={reason} onChange={e => setReason(e.target.value)} />}
-                {modal === 'extend' && <div className="mb-4"><label className="text-sm text-slate-600 block mb-1.5">Kunlar soni</label><input type="number" className="w-full px-3.5 py-2.5 bg-slate-50 border-2 border-transparent rounded-xl text-sm outline-none focus:border-blue-500 focus:bg-white transition-all tabular-nums" value={days} onChange={e => setDays(+e.target.value)} /></div>}
+                {modal === 'extend' && <div className="mb-4">
+                  <label className="text-sm text-slate-600 block mb-1.5">Kunlar soni</label>
+                  <input type="number" min="1" max="3650" className="w-full px-3.5 py-2.5 bg-slate-50 border-2 border-transparent rounded-xl text-sm outline-none focus:border-blue-500 focus:bg-white transition-all tabular-nums" value={days} onChange={e => setDays(+e.target.value)} />
+                  <div className="flex gap-2 mt-2">
+                    {[7, 30, 90, 365].map(d => (
+                      <button key={d} type="button" onClick={() => setDays(d)}
+                        className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors
+                          ${days === d ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
+                        {d} kun
+                      </button>
+                    ))}
+                  </div>
+                </div>}
+                {error && (
+                  <div className="flex items-start gap-2 bg-rose-50 border border-rose-200 rounded-xl px-3.5 py-2.5 mb-4">
+                    <AlertTriangle size={16} className="text-rose-600 shrink-0 mt-0.5" />
+                    <p className="text-sm text-rose-800">{error}</p>
+                  </div>
+                )}
                 <div className="flex gap-2">
-                  <button onClick={() => { setModal(null); setSelected(null) }} className="flex-1 py-2.5 bg-slate-100 text-slate-700 rounded-xl text-sm font-medium hover:bg-slate-200 transition-colors">Bekor</button>
-                  <button onClick={() => { if (modal === 'reject') act(adminShopsApi.reject, selected.id, reason); if (modal === 'block') act(adminShopsApi.block, selected.id, reason); if (modal === 'extend') act(adminShopsApi.extend, selected.id, days) }} className={`flex-1 py-2.5 rounded-xl text-sm font-medium text-white transition-colors ${modal === 'extend' ? 'bg-blue-600 hover:bg-blue-700' : 'bg-red-500 hover:bg-red-600'}`}>Tasdiqlash</button>
+                  <button onClick={() => { setModal(null); setSelected(null); setError('') }} className="flex-1 py-2.5 bg-slate-100 text-slate-700 rounded-xl text-sm font-medium hover:bg-slate-200 transition-colors">Bekor</button>
+                  <button
+                    disabled={busy || (modal === 'extend' && (!days || days < 1 || days > 3650))}
+                    onClick={() => { if (modal === 'reject') act(adminShopsApi.reject, selected.id, reason); if (modal === 'block') act(adminShopsApi.block, selected.id, reason); if (modal === 'extend') act(adminShopsApi.extend, selected.id, days) }}
+                    className={`flex-1 py-2.5 rounded-xl text-sm font-medium text-white transition-colors disabled:opacity-60
+                      ${modal === 'extend' ? 'bg-blue-600 hover:bg-blue-700' : 'bg-red-500 hover:bg-red-600'}`}>
+                    {busy ? 'Bajarilmoqda…' : 'Tasdiqlash'}
+                  </button>
                 </div>
               </>
             )}

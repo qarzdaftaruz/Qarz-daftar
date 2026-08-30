@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
-import { adminUsersApi } from '../../lib/api'
-import { Ban, RotateCcw } from 'lucide-react'
+import { adminUsersApi, errorMessage } from '../../lib/api'
+import { Ban, RotateCcw, AlertTriangle, X } from 'lucide-react'
 
 const AVATARS = [
   'linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%)',
@@ -13,16 +13,26 @@ const AVATARS = [
 export default function AdminUsers() {
   const [users, setUsers]   = useState([])
   const [loading, setLoading] = useState(true)
+  // Xato faqat konsolga tushib qolmasin — admin nima bo'lganini ko'rsin
+  const [error, setError]   = useState('')
+  const [busyId, setBusyId] = useState(null)
 
   const load = () => {
-    adminUsersApi.list().then(r => setUsers(r.data.users)).finally(() => setLoading(false))
+    adminUsersApi.list()
+      .then(r => setUsers(r.data.users))
+      .catch(e => setError(errorMessage(e, "Ro'yxat yuklanmadi")))
+      .finally(() => setLoading(false))
   }
   useEffect(() => { load() }, [])
 
   const toggle = async (u) => {
-    if (u.is_blocked) await adminUsersApi.unblock(u.id)
-    else await adminUsersApi.block(u.id)
-    load()
+    setBusyId(u.id); setError('')
+    try {
+      if (u.is_blocked) await adminUsersApi.unblock(u.id)
+      else await adminUsersApi.block(u.id)
+      load()
+    } catch (e) { setError(errorMessage(e, 'Amal bajarilmadi')) }
+    finally { setBusyId(null) }
   }
 
   return (
@@ -30,6 +40,13 @@ export default function AdminUsers() {
       <h1 className="font-display text-2xl font-bold text-slate-900 tracking-tight mb-5">
         Foydalanuvchilar <span className="text-slate-400 font-normal text-lg tabular-nums">({users.length})</span>
       </h1>
+      {error && (
+        <div className="mb-4 flex items-start gap-2 bg-rose-50 border border-rose-200 rounded-xl px-4 py-3">
+          <AlertTriangle size={18} className="text-rose-600 shrink-0 mt-0.5" />
+          <p className="text-sm text-rose-800 flex-1">{error}</p>
+          <button onClick={() => setError('')} className="text-rose-400 hover:text-rose-600"><X size={16} /></button>
+        </div>
+      )}
       <div className="bg-white rounded-2xl border border-slate-200/60 overflow-hidden shadow-sm">
         <table className="w-full text-sm">
           <thead className="bg-slate-50 border-b border-slate-100">
@@ -75,8 +92,8 @@ export default function AdminUsers() {
                 <td className="px-4 py-3 font-mono text-xs text-slate-500 tabular-nums">{u.telegram_id}</td>
                 <td className="px-4 py-3 text-slate-600 tabular-nums">{u.shops_count}</td>
                 <td className="px-4 py-3">
-                  <button onClick={() => toggle(u)}
-                    className={`inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-xl transition-all active:scale-95
+                  <button onClick={() => toggle(u)} disabled={busyId === u.id}
+                    className={`inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-xl transition-all active:scale-95 disabled:opacity-60
                       ${u.is_blocked
                         ? 'bg-green-600 text-white hover:bg-green-700 shadow-sm shadow-green-600/30'
                         : 'bg-rose-50 text-rose-600 ring-1 ring-rose-200 hover:bg-rose-100'}`}>

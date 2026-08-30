@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { adminPromoApi } from '../../lib/api'
+import { adminPromoApi, errorMessage } from '../../lib/api'
 import { useTimedState } from '../../hooks/useTimedState'
 import { Ticket, Plus, Trash2 } from 'lucide-react'
 
@@ -11,7 +11,10 @@ export default function AdminPromo() {
   const [error, setError]     = useTimedState('')
 
   const load = () => {
-    adminPromoApi.list().then(r => setPromos(r.data)).finally(() => setLoading(false))
+    adminPromoApi.list()
+      .then(r => setPromos(r.data))
+      .catch(e => setError(errorMessage(e, "Ro'yxat yuklanmadi")))
+      .finally(() => setLoading(false))
   }
   useEffect(() => { load() }, [])
 
@@ -27,7 +30,8 @@ export default function AdminPromo() {
 
   const del = async (id) => {
     if (!confirm("O'chirishni tasdiqlaysizmi?")) return
-    await adminPromoApi.delete(id); load()
+    try { await adminPromoApi.delete(id); load() }
+    catch (e) { setError(errorMessage(e, "Promokod o'chirilmadi")) }
   }
 
   const inputCls = "px-3.5 py-2.5 bg-slate-50 border-2 border-transparent rounded-xl text-sm outline-none focus:border-blue-500 focus:bg-white transition-all"

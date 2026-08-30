@@ -43,31 +43,61 @@ export const tma = {
   },
 
   backButton: {
+    /**
+     * XATO TUZATILDI: `hide()` ichida `b.offClick()` argumentsiz
+     * chaqirilardi. Telegram SDK'sida `offClick(cb)` obработchini
+     * ro'yxatdan `indexOf(cb)` bilan qidiradi — `undefined` uchun -1
+     * qaytadi va HECH NARSA o'chmaydi. Natijada har bir mijoz kartasi
+     * ochilganda yangi obработchi qo'shilib, eskilari joyida qolardi:
+     * bir necha ekrandan keyin «Orqaga» tugmasi bir bosishda bir necha
+     * marta ishlab, foydalanuvchini noto'g'ri ekranga tashlardi
+     * (qarzdor ekranidan do'kondor ekraniga va aksincha).
+     *
+     * Endi oxirgi obработchi eslab qolinadi va aynan o'zi o'chiriladi.
+     */
+    _handler: null,
+
     show(onClick) {
       const b = wa()?.BackButton
       if (isDev || !b) return
-      b.show()
+      // Eskisi qolib ketmasin — avval tozalaymiz
+      if (this._handler) b.offClick(this._handler)
+      this._handler = onClick
       b.onClick(onClick)
+      b.show()
     },
     hide() {
       const b = wa()?.BackButton
       if (isDev || !b) return
       b.hide()
-      b.offClick()
+      if (this._handler) {
+        b.offClick(this._handler)
+        this._handler = null
+      }
     },
   },
 
   mainButton: {
+    // BackButton bilan bir xil muammo: obработchi hech qachon o'chmasdi
+    _handler: null,
+
     show(text, onClick) {
       const mb = wa()?.MainButton
       if (isDev || !mb) return
+      if (this._handler) mb.offClick(this._handler)
+      this._handler = onClick
       mb.setText(text)
       mb.onClick(onClick)
       mb.show()
     },
     hide() {
-      if (isDev) return
-      wa()?.MainButton?.hide()
+      const mb = wa()?.MainButton
+      if (isDev || !mb) return
+      mb.hide()
+      if (this._handler) {
+        mb.offClick(this._handler)
+        this._handler = null
+      }
     },
   },
 

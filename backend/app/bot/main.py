@@ -1,5 +1,6 @@
 import re
 import time
+import asyncio
 import logging
 from typing import Optional
 
@@ -303,11 +304,40 @@ def _password_problem(pwd: str) -> Optional[str]:
     return None
 
 
+async def _fallback_hint(message: Message) -> None:
+    """Tushunilmagan matnga qisqa javob.
+
+    XATO TUZATILDI: bu handler `F.text` bo'yicha BARCHA matnni ushlab
+    olardi va parol sessiyasi bo'lmasa jimgina `return` qilardi. Ya'ni
+    foydalanuvchi botga «salom», «/help» yoki savol yozsa — hech qanday
+    javob kelmasdi. Tashqaridan bu aynan "bot ishlamayapti" bo'lib
+    ko'rinadi, chunki bot tirikligini bildiradigan biror belgi yo'q.
+    """
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🧾 Ilovani ochish", web_app=WebAppInfo(url=settings.MINI_APP_URL)),
+    ]])
+    try:
+        await message.answer(
+            "Men yozma savollarni tushunmayman 🙂\n\n"
+            "Barcha amallar ilovada bajariladi. Menyuni qayta ochish uchun /start.\n"
+            "Adminga murojaat qilish uchun /contact.",
+            reply_markup=kb,
+        )
+    except Exception as e:      # noqa: BLE001
+        logger.warning("Javob yuborilmadi (%s): %s", message.from_user.id, e)
+
+
 @router.message(F.text)
 async def handle_text(message: Message):
     tid = message.from_user.id
     session = _pwd_sessions.get(tid)
-    if not session or message.reply_to_message:
+    if not session:
+        # Admin reply'lari yuqoridagi handlerda ishlangan — bu yerga
+        # faqat oddiy, tushunilmagan matn tushadi
+        if not message.reply_to_message:
+            await _fallback_hint(message)
+        return
+    if message.reply_to_message:
         return
 
     username, expires_at = session
@@ -434,6 +464,118 @@ async def cb_shop_reject(callback: CallbackQuery):
 
     await callback.message.edit_text(f"❌ <b>{esc(shop.name)}</b> rad etildi.")
     await callback.answer("Rad etildi")
+
+
+# ─── Webhook: o'rnatish va o'zini-o'zi tuzatish ───────────────────────────────
+
+async def bot_identity() -> str:
+    """Bot tokeni haqiqatan ishlayaptimi — loglarda bir qarashda ko'rinsin.
+
+    Noto'g'ri yoki bekor qilingan token eng ko'p uchraydigan sabab:
+    tizim normal ishga tushadi, lekin bot butunlay jim bo'ladi va
+    hech qayerda xato ko'rinmaydi.
+    """
+    try:
+        me = await bot.get_me()
+        return f"@{me.username}"
+    except Exception as e:      # noqa: BLE001
+        logger.error(
+            "[bot] TOKEN ISHLAMAYAPTI: %s — Railway Variables ichidagi "
+            "BOT_TOKEN ni tekshiring (@BotFather → /mybots → API Token)", e
+        )
+        return ""
+
+
+async def _set_webhook(url: str) -> None:
+    from app.bot.main import dp as _dp      # nom aniq bo'lsin
+
+    await bot.set_webhook(
+        url,
+        drop_pending_updates=True,
+        secret_token=settings.TELEGRAM_WEBHOOK_SECRET,
+        allowed_updates=_dp.resolve_used_update_types(),
+    )
+
+
+async def install_webhook(url: str, attempts: int = 3) -> None:
+    """Webhook'ni o'rnatadi va natijani loglarga chiqaradi.
+
+    XATO TUZATILDI: ilgari `set_webhook` to'g'ridan-to'g'ri `await`
+    qilinardi. Telegram bir soniyaga javob bermasa butun `lifespan`
+    yiqilardi — ya'ni bot bilan birga API ham ko'tarilmasdi va Railway
+    qayta ishga tushirish halqasiga tushib qolardi. Endi bir necha marta
+    urinib ko'riladi; baribir bo'lmasa API ishlaydi, xato esa loglarda
+    ochiq ko'rinadi.
+    """
+    username = await bot_identity()
+
+    for attempt in range(1, attempts + 1):
+        try:
+            await _set_webhook(url)
+            logger.info("Webhook o'rnatildi: %s %s", url, username)
+            break
+        except Exception as e:      # noqa: BLE001
+            logger.warning("[bot] webhook o'rnatilmadi (%s/%s): %s", attempt, attempts, e)
+            if attempt == attempts:
+                logger.error(
+                    "[bot] WEBHOOK O'RNATILMADI — bot xabarlarni qabul qilmaydi. "
+                    "Manzil: %s", url,
+                )
+                return
+            await asyncio.sleep(2 * attempt)
+
+    # Telegram tomonidagi haqiqiy holat — "bot ishlamayapti" degan
+    # shikoyatda birinchi qaraladigan joy
+    try:
+        info = await bot.get_webhook_info()
+        logger.info(
+            "[bot] holat: url=%s kutilayotgan=%s oxirgi xato=%s",
+            info.url or "—", info.pending_update_count, info.last_error_message or "yo'q",
+        )
+    except Exception as e:      # noqa: BLE001
+        logger.warning("[bot] webhook holatini olishda xato: %s", e)
+
+
+async def ensure_webhook() -> None:
+    """Webhook joyidami — vaqti-vaqti bilan tekshiradi va tiklaydi.
+
+    NIMA UCHUN KERAK: Railway deploy paytida eski va yangi konteyner bir
+    muddat BIRGA ishlaydi. Yangi konteyner webhook'ni o'rnatgandan keyin
+    Railway eskisini to'xtatadi va o'shanda eskisining `delete_webhook`
+    chaqiruvi endigina o'rnatilgan webhook'ni O'CHIRIB yuborardi. Natija:
+    loglarda «Webhook o'rnatildi» yozuvi turadi, lekin Telegram hech qanday
+    xabar yubormaydi — bot bir necha kun jim qolib ketishi mumkin edi.
+
+    Asosiy sabab tuzatildi (to'xtashda webhook o'chirilmaydi), lekin bu
+    tekshiruv zaxira sifatida qoladi: webhook boshqa sabab bilan yo'qolsa
+    ham (masalan qo'lda o'chirilsa) 15 daqiqada o'zi tiklanadi.
+    """
+    expected = settings.webhook_full_url
+    if not expected:
+        return
+    try:
+        info = await bot.get_webhook_info()
+    except Exception as e:      # noqa: BLE001
+        logger.warning("[bot] webhook holatini olishda xato: %s", e)
+        return
+
+    if info.url == expected:
+        if info.last_error_message:
+            logger.warning(
+                "[bot] webhook joyida, lekin Telegram oxirgi urinishda xatoga uchradi: %s "
+                "(navbatda %s ta xabar)", info.last_error_message, info.pending_update_count,
+            )
+        return
+
+    logger.error(
+        "[bot] WEBHOOK YO'QOLGAN (Telegram'da «%s», kutilgani «%s») — tiklanmoqda",
+        info.url or "bo'sh", expected,
+    )
+    try:
+        await _set_webhook(expected)
+        logger.info("[bot] webhook tiklandi: %s", expected)
+    except Exception as e:      # noqa: BLE001
+        logger.error("[bot] webhook tiklanmadi: %s", e)
 
 
 def setup_bot():
